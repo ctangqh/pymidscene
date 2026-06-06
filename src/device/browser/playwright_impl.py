@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List, Union
 from pathlib import Path
 from playwright.sync_api import sync_playwright, Browser as PlaywrightBrowser, Page
 from ..base import BaseDevice
@@ -7,6 +7,15 @@ from common.exceptions import BrowserLaunchError, BrowserNavigationError, Action
 
 class PlaywrightBrowser(BaseDevice):
     """Playwright浏览器实现"""
+
+    @property
+    def interface_type(self) -> str:
+        return "web"
+
+    def action_space(self) -> List[Any]:
+        from core.agent.action_space import WEB_ACTION_SPACE
+        return list(WEB_ACTION_SPACE)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._playwright = None
@@ -23,6 +32,8 @@ class PlaywrightBrowser(BaseDevice):
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-blink-features=AutomationControlled",
+                    "--disable-gpu",
+                    "--single-process",
                     f"--user-agent={self.user_agent}",
                 ]
             )
@@ -79,12 +90,13 @@ class PlaywrightBrowser(BaseDevice):
         }""")
         return dom
 
-    def screenshot(self, save_path: Optional[Path] = None, full_page: bool = True) -> bytes:
+    def screenshot(self, save_path: Optional[Union[str, Path]] = None, full_page: bool = True) -> bytes:
         img_bytes = self._page.screenshot(full_page=full_page)
         if save_path:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            save_path.write_bytes(img_bytes)
-            logger.debug(f"截图已保存到: {save_path}")
+            p = Path(save_path) if not isinstance(save_path, Path) else save_path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(img_bytes)
+            logger.debug(f"截图已保存到: {p}")
         return img_bytes
 
     def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
@@ -113,10 +125,16 @@ class PlaywrightBrowser(BaseDevice):
                 x, y = position
                 logger.debug(f"点击坐标({x}, {y})并输入文本: {text}")
                 self.click(position=position)
+                import time
+                time.sleep(0.2)  # 等待焦点切换
                 if clear_before:
-                    self._page.keyboard.press("Control+A")
+                    # Windows 下 Control+A 更可靠，Mac 下可能需要 Command+A
+                    # 这里尝试通用的方式
+                    self._page.keyboard.down("Control")
+                    self._page.keyboard.press("a")
+                    self._page.keyboard.up("Control")
                     self._page.keyboard.press("Backspace")
-                self._page.keyboard.type(text)
+                self._page.keyboard.type(text, delay=50)  # 添加打字延迟，模拟真实输入
             else:
                 raise ValueError("selector 和 position 不能同时为空")
         except Exception as e:

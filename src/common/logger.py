@@ -7,7 +7,7 @@ from .config import settings
 
 def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None) -> None:
     """初始化日志系统"""
-    log_level = log_level or settings.LOG_LEVEL
+    log_level = (log_level or settings.LOG_LEVEL).upper()
     
     # 移除默认 handler
     logger.remove()

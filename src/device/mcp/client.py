@@ -1,297 +1,372 @@
+"""
+MCP Playwright Device - Adapter for the OFFICIAL @playwright/mcp server.
+
+Supports two transports:
+  1. stdio: launch a local @playwright/mcp via npx (no remote server needed)
+  2. streamable HTTP: connect to a remote @playwright/mcp HTTP endpoint
+
+Tool names follow the official Microsoft schema (browser_navigate, browser_type,
+browser_click, browser_evaluate, browser_take_screenshot, browser_snapshot,
+browser_press_key, etc.), NOT the custom playwright_* names from earlier drafts.
+"""
 from typing import Optional, Tuple, Dict, Any, List
 from pathlib import Path
 import asyncio
-import httpx
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client as http_connect
-from mcp.client.stdio import StdioServerParameters, stdio_client
+import base64
+import json
+import shutil
+import threading
+import shlex
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+try:
+    from mcp.client.streamable_http import streamablehttp_client
+except ImportError:
+    from mcp.client.streamable_http import streamable_http_client as streamablehttp_client
+
 from ..base import BaseDevice
 from common.config import settings
 from common.logger import logger
-from common.exceptions import BrowserLaunchError as DeviceConnectionError, ActionExecutionError, BrowserError as DeviceError
+from common.exceptions import (
+    BrowserLaunchError as DeviceConnectionError,
+    ActionExecutionError,
+    BrowserError as DeviceError,
+)
+
 
 class McpPlaywrightDevice(BaseDevice):
     """
-    MCP协议对接的Playwright设备，支持两种模式：
-    1. HTTP模式：对接远程/云浏览器MCP服务，适合分布式部署
-    2. STDIO模式：对接本地MCP服务（如Claude Desktop自带的Playwright MCP）
-    完全兼容原有BaseDevice接口，业务代码零修改即可切换
+    Device backed by the official @playwright/mcp server.
+
+    Transport selection:
+      - mcp_server_url starts with http:// or https://  ->  streamable HTTP
+      - mcp_stdio_command provided                       ->  stdio with that cmd
+      - mcp_server_url empty                             ->  stdio with
+        `npx -y @playwright/mcp@latest --headless --isolated ...` defaults
     """
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.mcp_server_url: str = kwargs.get("mcp_server_url", getattr(settings, "MCP_SERVER_URL", ""))
-        self.mcp_api_key: str = kwargs.get("mcp_api_key", getattr(settings, "MCP_API_KEY", ""))
-        self.mcp_timeout: int = kwargs.get("mcp_timeout", getattr(settings, "MCP_TIMEOUT", 60))
-        self._session: Optional[ClientSession] = None
-        self._context_id: Optional[str] = None
-        self._page_id: Optional[str] = None
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._http_ctx = None  # 存储HTTP连接上下文，用于关闭
-        self._http_client = None  # 存储httpx客户端，用于关闭
+        self.mcp_server_url: str = kwargs.get(
+            "mcp_server_url", getattr(settings, "MCP_SERVER_URL", "")
+        )
+        self.mcp_api_key: str = kwargs.get(
+            "mcp_api_key", getattr(settings, "MCP_API_KEY", "")
+        )
+        self.mcp_timeout: int = kwargs.get(
+            "mcp_timeout", getattr(settings, "MCP_TIMEOUT", 60)
+        )
+        self.mcp_stdio_command: Optional[List[str]] = kwargs.get("mcp_stdio_command")
 
-    def _run_async(self, coro):
-        """同步执行异步代码，适配现有同步架构"""
-        return self._loop.run_until_complete(coro)
+        self._session: Optional[ClientSession] = None
+        self._session_cm = None
+        self._transport_cm = None
+        # MCP session is bound to the loop that created it (anyio TaskGroup).
+        # Dedicate one background thread+loop for all MCP I/O so sync API works.
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+
+    def _ensure_loop(self) -> None:
+        if self._loop and self._thread and self._thread.is_alive():
+            return
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def runner():
+            asyncio.set_event_loop(loop)
+            ready.set()
+            loop.run_forever()
+
+        t = threading.Thread(target=runner, name="mcp-device-loop", daemon=True)
+        t.start()
+        ready.wait()
+        self._loop = loop
+        self._thread = t
+
+    def _submit(self, coro, timeout: Optional[int] = None):
+        if not self._loop:
+            raise DeviceError("MCP device loop not initialized; call launch() first")
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return fut.result(timeout=timeout or self.mcp_timeout)
 
     def launch(self) -> None:
-        """连接MCP服务并初始化浏览器上下文"""
+        self._ensure_loop()
+
         async def _launch():
-            try:
-                logger.info(f"连接MCP Playwright服务：{self.mcp_server_url}")
-                # 1. 建立MCP连接
-                if self.mcp_server_url.startswith(("http://", "https://")):
-                    # HTTP模式：对接远程云浏览器MCP服务
-                    headers = {}
-                    if self.mcp_api_key:
-                        headers["X-API-Key"] = self.mcp_api_key
-                    # 新版MCP SDK需要自己创建httpx客户端配置headers和超时
-                    self._http_client = httpx.AsyncClient(
-                        headers=headers,
-                        timeout=self.mcp_timeout
-                    )
-                    # 手动管理连接上下文，避免async with自动关闭
-                    self._http_ctx = http_connect(
-                        url=self.mcp_server_url,
-                        http_client=self._http_client
-                    )
-                    read_stream, write_stream, _ = await self._http_ctx.__aenter__()
-                    # 手动创建ClientSession
-                    self._session = ClientSession(read_stream, write_stream)
-                    # 完成MCP协议初始化握手
-                    await self._session.initialize()
-                    logger.info("MCP协议初始化握手完成")
+            url = self.mcp_server_url
+            if url and url.startswith(("http://", "https://")):
+                logger.info(f"MCP connect (HTTP): {url}")
+                self._transport_cm = streamablehttp_client(url)
+                streams = await self._transport_cm.__aenter__()
+                read_stream, write_stream = streams[0], streams[1]
+            else:
+                if self.mcp_stdio_command:
+                    cmd = list(self.mcp_stdio_command)
                 else:
-                    # STDIO模式：对接本地运行的MCP服务（如Claude Playwright MCP）
-                    cmd_parts = self.mcp_server_url.split(" ")
-                    server_params = StdioServerParameters(
-                        command=cmd_parts[0],
-                        args=cmd_parts[1:] if len(cmd_parts) > 1 else [],
-                        env=None
-                    )
-                    session_ctx = stdio_client(server_params)
-                    self._session = await session_ctx.__aenter__()
-
-                # 2. 初始化浏览器上下文
-                create_ctx_resp = await self._session.call_tool(
-                    "playwright_create_context",
-                    parameters={
-                        "viewport": {
-                            "width": self.viewport_width,
-                            "height": self.viewport_height
-                        },
-                        "headless": self.headless,
-                        "user_agent": self.user_agent
-                    }
+                    cmd = [
+                        "npx",
+                        "-y",
+                        "@playwright/mcp@latest",
+                        "--headless" if self.headless else "--no-headless",
+                        "--isolated",
+                        "--no-sandbox",
+                        "--browser",
+                        "chromium",
+                    ]
+                logger.info(f"MCP connect (stdio): {' '.join(cmd)}")
+                executable = shutil.which(cmd[0]) or cmd[0]
+                params = StdioServerParameters(
+                    command=executable, args=cmd[1:], env=None
                 )
-                self._context_id = create_ctx_resp.content[0].text.strip()
-                logger.debug(f"MCP上下文创建成功：{self._context_id}")
+                self._transport_cm = stdio_client(params)
+                streams = await self._transport_cm.__aenter__()
+                read_stream, write_stream = streams[0], streams[1]
 
-                # 3. 新建页面
-                create_page_resp = await self._session.call_tool(
-                    "playwright_new_page",
-                    parameters={"context_id": self._context_id}
-                )
-                self._page_id = create_page_resp.content[0].text.strip()
-                logger.info("MCP Playwright设备初始化成功")
+            self._session_cm = ClientSession(read_stream, write_stream)
+            self._session = await self._session_cm.__aenter__()
+            init_result = await self._session.initialize()
+            logger.info(
+                f"MCP initialize ok: server={init_result.serverInfo.name} "
+                f"v{init_result.serverInfo.version}"
+            )
 
-            except Exception as e:
-                logger.error(f"连接MCP Playwright服务失败：{str(e)}")
-                raise DeviceConnectionError(f"MCP连接失败：{str(e)}") from e
-
-        return self._run_async(_launch())
+        try:
+            self._submit(_launch(), timeout=120)
+        except Exception as e:
+            logger.error(f"MCP launch failed: {e}")
+            raise DeviceConnectionError(f"MCP launch failed: {e}") from e
 
     def close(self) -> None:
-        """关闭MCP连接和浏览器资源"""
         async def _close():
             try:
-                if self._page_id:
-                    await self._session.call_tool(
-                        "playwright_close_page",
-                        parameters={"page_id": self._page_id}
-                    )
-                if self._context_id:
-                    await self._session.call_tool(
-                        "playwright_close_context",
-                        parameters={"context_id": self._context_id}
-                    )
-                if self._session:
-                    await self._session.__aexit__(None, None, None)
-                # 关闭HTTP连接上下文
-                if self._http_ctx:
-                    await self._http_ctx.__aexit__(None, None, None)
-                # 关闭httpx客户端
-                if self._http_client:
-                    await self._http_client.aclose()
-                self._loop.close()
-                logger.info("MCP Playwright设备已关闭")
+                if self._session_cm is not None:
+                    await self._session_cm.__aexit__(None, None, None)
             except Exception as e:
-                logger.warning(f"关闭MCP设备时出现警告：{str(e)}")
+                logger.warning(f"MCP session close warn: {e}")
+            try:
+                if self._transport_cm is not None:
+                    await self._transport_cm.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"MCP transport close warn: {e}")
+            self._session = None
+            self._session_cm = None
+            self._transport_cm = None
 
-        return self._run_async(_close())
+        try:
+            if self._loop and self._thread and self._thread.is_alive():
+                self._submit(_close(), timeout=30)
+        finally:
+            if self._loop:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._thread:
+                self._thread.join(timeout=5)
+            self._loop = None
+            self._thread = None
+
+    async def _call(self, tool_name: str, arguments: Dict[str, Any]):
+        if self._session is None:
+            raise DeviceError("MCP session not initialized")
+        return await self._session.call_tool(tool_name, arguments=arguments)
+
+    @staticmethod
+    def _first_text(result) -> str:
+        if not result or not getattr(result, "content", None):
+            return ""
+        for part in result.content:
+            if getattr(part, "type", "") == "text" and getattr(part, "text", None):
+                return part.text
+            if hasattr(part, "text") and part.text:
+                return part.text
+        return ""
+
+    @staticmethod
+    def _first_image_b64(result) -> Optional[str]:
+        if not result or not getattr(result, "content", None):
+            return None
+        for part in result.content:
+            data = getattr(part, "data", None)
+            if data:
+                return data
+        return None
+
+    @property
+    def interface_type(self) -> str:
+        return "browser"
 
     def goto(self, url: str, **kwargs) -> None:
-        """跳转到指定URL"""
-        async def _goto():
-            try:
-                logger.debug(f"MCP导航到：{url}")
-                await self._session.call_tool(
-                    "playwright_goto",
-                    parameters={
-                        "page_id": self._page_id,
-                        "url": url,
-                        "timeout": kwargs.get("timeout", self.timeout)
-                    }
-                )
-                self.current_url = url
-            except Exception as e:
-                logger.error(f"MCP导航失败：{str(e)}")
-                raise ActionExecutionError(f"导航失败：{str(e)}") from e
-
-        return self._run_async(_goto())
+        try:
+            self._submit(self._call("browser_navigate", {"url": url}))
+            self.current_url = url
+        except Exception as e:
+            raise ActionExecutionError(f"navigate failed: {e}") from e
 
     def get_page_content(self) -> str:
-        """获取页面HTML内容"""
-        async def _get_content():
-            resp = await self._session.call_tool(
-                "playwright_get_page_content",
-                parameters={"page_id": self._page_id}
+        try:
+            result = self._submit(
+                self._call(
+                    "browser_evaluate",
+                    {"function": "() => document.documentElement.outerHTML"},
+                )
             )
-            return resp.content[0].text.strip()
-
-        return self._run_async(_get_content())
+            text = self._first_text(result)
+            if text.startswith("### Error"):
+                raise DeviceError(f"MCP browser error: {text}")
+            return text
+        except Exception as e:
+            raise ActionExecutionError(f"get_page_content failed: {e}") from e
 
     def get_dom_tree(self) -> Dict[str, Any]:
-        """获取结构化DOM树（和本地Playwright返回格式完全一致）"""
-        async def _get_dom():
-            resp = await self._session.call_tool(
-                "playwright_get_dom_tree",
-                parameters={"page_id": self._page_id}
+        try:
+            result = self._submit(self._call("browser_snapshot", {}))
+            text = self._first_text(result)
+            if text.startswith("### Error"):
+                raise DeviceError(f"MCP browser error: {text}")
+            return {"snapshot": text}
+        except Exception as e:
+            raise ActionExecutionError(f"get_dom_tree failed: {e}") from e
+
+    def screenshot(
+        self, save_path: Optional[Path] = None, full_page: bool = True
+    ) -> bytes:
+        try:
+            args: Dict[str, Any] = {"type": "png"}
+            if full_page:
+                args["fullPage"] = True
+            result = self._submit(self._call("browser_take_screenshot", args))
+            b64 = self._first_image_b64(result)
+            if not b64:
+                text_content = self._first_text(result).strip()
+                if text_content.startswith("### Error"):
+                    raise DeviceError(f"MCP browser error: {text_content}")
+                b64 = text_content
+
+            try:
+                img = base64.b64decode(b64) if b64 else b""
+            except Exception as e:
+                if b64 and len(b64) < 500:
+                    raise DeviceError(f"MCP returned non-image data: {b64}") from e
+                raise
+            if save_path and img:
+                p = Path(save_path) if not isinstance(save_path, Path) else save_path
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(img)
+            return img
+        except Exception as e:
+            raise ActionExecutionError(f"screenshot failed: {e}") from e
+
+    def click(
+        self,
+        selector: Optional[str] = None,
+        position: Optional[Tuple[float, float]] = None,
+        **kwargs,
+    ) -> None:
+        if not selector:
+            raise ActionExecutionError(
+                "@playwright/mcp browser_click requires a selector/target."
             )
-            import json
-            return json.loads(resp.content[0].text.strip())
-
-        return self._run_async(_get_dom())
-
-    def screenshot(self, save_path: Optional[Path] = None, full_page: bool = True) -> bytes:
-        """截图，支持保存到本地路径"""
-        async def _screenshot():
-            resp = await self._session.call_tool(
-                "playwright_screenshot",
-                parameters={
-                    "page_id": self._page_id,
-                    "full_page": full_page,
-                    "encoding": "base64"
-                }
+        try:
+            self._submit(
+                self._call(
+                    "browser_click",
+                    {
+                        "element": kwargs.get("element", selector),
+                        "target": selector,
+                    },
+                )
             )
-            import base64
-            img_bytes = base64.b64decode(resp.content[0].text.strip())
-            if save_path:
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                save_path.write_bytes(img_bytes)
-                logger.debug(f"MCP截图已保存到：{save_path}")
-            return img_bytes
+        except Exception as e:
+            raise ActionExecutionError(f"click failed: {e}") from e
 
-        return self._run_async(_screenshot())
+    def input(
+        self,
+        text: str,
+        selector: Optional[str] = None,
+        position: Optional[Tuple[float, float]] = None,
+        clear_before: bool = True,
+        **kwargs,
+    ) -> None:
+        if not selector:
+            raise ActionExecutionError(
+                "@playwright/mcp browser_type requires a selector/target."
+            )
+        try:
+            args: Dict[str, Any] = {
+                "element": kwargs.get("element", selector),
+                "target": selector,
+                "text": text,
+            }
+            if kwargs.get("submit"):
+                args["submit"] = True
+            self._submit(self._call("browser_type", args))
+        except Exception as e:
+            raise ActionExecutionError(f"input failed: {e}") from e
 
-    def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
-        """点击元素，支持选择器或坐标"""
-        async def _click():
-            try:
-                params = {"page_id": self._page_id, "timeout": kwargs.get("timeout", self.timeout)}
-                if selector:
-                    logger.debug(f"MCP点击元素：{selector}")
-                    params["selector"] = selector
-                elif position:
-                    x, y = position
-                    logger.debug(f"MCP点击坐标：({x}, {y})")
-                    params["position"] = {"x": x, "y": y}
-                else:
-                    raise ValueError("selector和position不能同时为空")
+    def scroll(
+        self,
+        direction: str = "down",
+        distance: Optional[int] = None,
+        **kwargs,
+    ) -> None:
+        dist = int(distance or self.viewport_height * 0.8)
+        sign = {
+            "down": ("0", str(dist)),
+            "up": ("0", str(-dist)),
+            "right": (str(dist), "0"),
+            "left": (str(-dist), "0"),
+        }.get(direction, ("0", str(dist)))
+        fn = f"() => window.scrollBy({sign[0]}, {sign[1]})"
+        try:
+            self._submit(self._call("browser_evaluate", {"function": fn}))
+        except Exception as e:
+            raise ActionExecutionError(f"scroll failed: {e}") from e
 
-                await self._session.call_tool("playwright_click", parameters=params)
-            except Exception as e:
-                logger.error(f"MCP点击失败：{str(e)}")
-                raise ActionExecutionError(f"点击失败：{str(e)}") from e
+    def wait_for_selector(
+        self, selector: str, timeout: Optional[int] = None, **kwargs
+    ) -> bool:
+        deadline_ms = timeout or self.timeout
+        fn = (
+            "async () => {"
+            f"const sel = {json.dumps(selector)};"
+            f"const deadline = Date.now() + {int(deadline_ms)};"
+            "while (Date.now() < deadline) {"
+            "  if (document.querySelector(sel)) return true;"
+            "  await new Promise(r => setTimeout(r, 100));"
+            "} return false;"
+            "}"
+        )
+        try:
+            result = self._submit(self._call("browser_evaluate", {"function": fn}))
+            txt = self._first_text(result).strip().lower()
+            return "true" in txt
+        except Exception as e:
+            logger.warning(f"wait_for_selector({selector}) error: {e}")
+            return False
 
-        return self._run_async(_click())
-
-    def input(self, text: str, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, clear_before: bool = True, **kwargs) -> None:
-        """输入文本，支持选择器或点击坐标后输入"""
-        async def _input():
-            try:
-                params = {"page_id": self._page_id, "text": text, "clear_before": clear_before, "timeout": kwargs.get("timeout", self.timeout)}
-                if selector:
-                    logger.debug(f"MCP输入文本到元素：{selector}，内容：{text[:20]}...")
-                    params["selector"] = selector
-                elif position:
-                    x, y = position
-                    logger.debug(f"MCP点击坐标({x}, {y})并输入：{text[:20]}...")
-                    params["position"] = {"x": x, "y": y}
-                else:
-                    raise ValueError("selector和position不能同时为空")
-
-                await self._session.call_tool("playwright_fill", parameters=params)
-            except Exception as e:
-                logger.error(f"MCP输入失败：{str(e)}")
-                raise ActionExecutionError(f"输入失败：{str(e)}") from e
-
-        return self._run_async(_input())
-
-    def scroll(self, direction: str = "down", distance: Optional[int] = None, **kwargs) -> None:
-        """滚动页面"""
-        async def _scroll():
-            try:
-                distance = distance or self.viewport_height * 0.8
-                logger.debug(f"MCP页面向{direction}滚动{distance}像素")
-                await self._session.call_tool(
-                    "playwright_scroll",
-                    parameters={
-                        "page_id": self._page_id,
-                        "direction": direction,
-                        "distance": distance
-                    }
-                )
-            except Exception as e:
-                logger.error(f"MCP滚动失败：{str(e)}")
-                raise ActionExecutionError(f"滚动失败：{str(e)}") from e
-
-        return self._run_async(_scroll())
-
-    def wait_for_selector(self, selector: str, timeout: Optional[int] = None, **kwargs) -> bool:
-        """等待元素出现"""
-        async def _wait():
-            try:
-                await self._session.call_tool(
-                    "playwright_wait_for_selector",
-                    parameters={
-                        "page_id": self._page_id,
-                        "selector": selector,
-                        "timeout": timeout or self.timeout
-                    }
-                )
-                return True
-            except Exception as e:
-                logger.warning(f"等待元素{selector}超时：{str(e)}")
-                return False
-
-        return self._run_async(_wait())
+    def keyboard_press(self, key_name: str, **kwargs) -> None:
+        try:
+            self._submit(self._call("browser_press_key", {"key": key_name}))
+        except Exception as e:
+            raise ActionExecutionError(f"keyboard_press failed: {e}") from e
 
     def evaluate_script(self, script: str, *args) -> Any:
-        """执行JavaScript脚本"""
-        async def _evaluate():
-            resp = await self._session.call_tool(
-                "playwright_evaluate",
-                parameters={
-                    "page_id": self._page_id,
-                    "script": script,
-                    "args": list(args)
-                }
-            )
-            import json
-            return json.loads(resp.content[0].text.strip())
-
-        return self._run_async(_evaluate())
+        s = script.strip()
+        if not (s.startswith("(") or s.startswith("async") or s.startswith("function")):
+            fn = f"() => {{ return ({s}); }}"
+        else:
+            fn = script
+        try:
+            result = self._submit(self._call("browser_evaluate", {"function": fn}))
+            txt = self._first_text(result).strip()
+            if not txt:
+                return None
+            try:
+                return json.loads(txt)
+            except (json.JSONDecodeError, ValueError):
+                return txt
+        except Exception as e:
+            raise ActionExecutionError(f"evaluate failed: {e}") from e
 
     def __enter__(self):
         self.launch()

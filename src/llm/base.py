@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Type
+import json
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from common.config import settings
@@ -56,10 +57,9 @@ class BaseLLM(ABC):
         :param output_schema: 输出的 Pydantic 模型类
         :return: 解析后的 Pydantic 模型实例
         """
-        # 构造结构化输出提示
-        schema_prompt = f"请严格按照以下 JSON 格式返回结果，不要输出只返回符合 JSON 格式，不要添加任何其他内容：\n"
-        schema_prompt += f"```json\n"
-        schema_prompt += output_schema.model_json_schema()
+        schema_prompt = "请严格按照以下 JSON Schema 返回结果，只返回合法 JSON，不要添加任何其他内容：\n"
+        schema_prompt += "```json\n"
+        schema_prompt += json.dumps(output_schema.model_json_schema(), ensure_ascii=False)
         schema_prompt += "\n```\n"
         
         # 插入到最后一条消息前面
@@ -71,9 +71,16 @@ class BaseLLM(ABC):
         response = self.chat(messages, **kwargs)
         
         # 解析 JSON 结果
-        import json_repair
         try:
-            json_data = json_repair.loads(response)
+            try:
+                import json_repair
+                json_data = json_repair.loads(response)
+            except ImportError:
+                import json as _json
+                import re
+                json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', response, re.DOTALL)
+                json_str = json_match.group(1) if json_match else response
+                json_data = _json.loads(json_str)
             return output_schema.model_validate(json_data)
         except Exception as e:
             logger.error(f"结构化输出解析失败: {str(e)}, 原始返回: {response}")

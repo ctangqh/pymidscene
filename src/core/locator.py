@@ -83,8 +83,9 @@ class ElementLocator:
                 return None
             
             # 获取元素边界框
+            escaped_selector = selector.replace("'", "\\'")
             bbox = self.browser.evaluate_script(f"""() => {{
-                const el = document.querySelector('{selector.replace("'", "\\'")}');
+                const el = document.querySelector('{escaped_selector}');
                 if (!el) return null;
                 const rect = el.getBoundingClientRect();
                 return {{

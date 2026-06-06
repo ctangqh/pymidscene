@@ -105,6 +105,17 @@ class YAMLParseError(TaskParseError):
     message = "YAML 流程解析失败"
 
 
+# ========== 断言相关异常 ==========
+class AssertionError(PyMidsceneBaseException):
+    code = 60000
+    message = "断言失败"
+
+
+class AssertionTimeoutError(AssertionError):
+    code = 60001
+    message = "断言等待超时"
+
+
 __all__ = [
     "PyMidsceneBaseException",
     "ConfigError",
@@ -124,4 +135,6 @@ __all__ = [
     "TaskTimeoutError",
     "TaskParseError",
     "YAMLParseError",
+    "AssertionError",
+    "AssertionTimeoutError",
 ]
