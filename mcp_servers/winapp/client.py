@@ -1,15 +1,22 @@
 """WinAppDriver HTTP API 客户端封装"""
 import json
 import base64
+import os
+import sys
 import subprocess
 import time
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 
+# 确保打包后能正确导入同目录模块
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 import httpx
 from loguru import logger
 
-from .config import winapp_settings
+from config import winapp_settings
 
 
 class WinAppDriverClient:
@@ -32,7 +39,7 @@ class WinAppDriverClient:
 
     def _get_client(self) -> httpx.Client:
         if self._client is None:
-            self._client = httpx.Client(timeout=30.0)
+            self._client = httpx.Client(timeout=float(winapp_settings.WINAPPDRIVER_HTTP_TIMEOUT))
         return self._client
 
     def _request(

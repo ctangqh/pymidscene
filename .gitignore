@@ -30,6 +30,9 @@ Thumbs.db
 *.egg-info/
 dist/
 build/
+bin/
+*.spec
+*.log
 
 # Hermes
 .hermes/

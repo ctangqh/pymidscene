@@ -5,32 +5,35 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+# 确保打包后能正确导入同目录模块
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 from mcp.server.fastmcp import FastMCP
 from loguru import logger
 
-from .config import winapp_settings
-from .client import WinAppDriverClient
-
-# 确保打包后能正确加载 .env
-if getattr(sys, 'frozen', False):
-    exe_dir = Path(sys.executable).parent
-    env_path = exe_dir / ".env"
-    if env_path.exists():
-        from dotenv import load_dotenv
-        load_dotenv(env_path)
+from config import winapp_settings
+from client import WinAppDriverClient
 
 # 配置日志
 logger.remove()
-logger.add(
-    sys.stderr,
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>",
-)
+_log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>"
+if sys.stderr is not None:
+    logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"), format=_log_format)
+if sys.stdout is not None:
+    logger.add(sys.stdout, level=os.getenv("LOG_LEVEL", "INFO"), format=_log_format)
+# 打包模式下写入文件日志
+if getattr(sys, "frozen", False):
+    exe_dir = Path(sys.executable).parent
+    logger.add(exe_dir / "winapp_mcp.log", level="DEBUG", rotation="10 MB", retention="3 days")
 
 # 创建 MCP 服务器
 mcp = FastMCP(
     "WinAppDriver",
     instructions="控制 Windows 桌面应用的 MCP 服务器，基于 WinAppDriver",
+    host=winapp_settings.MCP_HOST,
+    port=winapp_settings.MCP_PORT,
     dependencies=["httpx", "loguru", "pydantic-settings"],
 )
 
@@ -125,12 +128,14 @@ def main():
     logger.info("=" * 50)
     logger.info("  WinAppDriver MCP Server 启动")
     logger.info("=" * 50)
+    logger.info(f"  MCP 监听地址: http://{winapp_settings.MCP_HOST}:{winapp_settings.MCP_PORT}/sse")
     logger.info(f"  WinAppDriver: {winapp_settings.WINAPPDRIVER_HOST}:{winapp_settings.WINAPPDRIVER_PORT}")
+    logger.info(f"  HTTP 超时: {winapp_settings.WINAPPDRIVER_HTTP_TIMEOUT}s")
     logger.info(f"  Auto-start: {winapp_settings.WINAPPDRIVER_AUTO_START}")
     logger.info("=" * 50)
 
     try:
-        mcp.run()
+        mcp.run(transport="sse")
     except KeyboardInterrupt:
         logger.info("收到停止信号")
     except Exception as e:

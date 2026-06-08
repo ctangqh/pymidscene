@@ -1,46 +1,41 @@
-# WinAppDriver MCP Server ARM64 打包脚本
-# 需在 ARM64 架构的 Windows 机器上运行
+# WinAppDriver MCP Server ARM64 build script
+# Requires ARM64 Windows environment
 
 $ErrorActionPreference = "Stop"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  WinAppDriver MCP Server ARM64 打包" -ForegroundColor Cyan
+Write-Host "  WinAppDriver MCP Server ARM64 Build" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 检查处理器架构
+# Check processor architecture
 $osArch = $env:PROCESSOR_ARCHITECTURE
 if ($osArch -ne "ARM64") {
-    Write-Host "[!] 警告: 当前不是 ARM64 架构" -ForegroundColor Yellow
-    Write-Host "[!] 当前架构: $osArch" -ForegroundColor Yellow
-    $confirm = Read-Host "是否继续? (y/N)"
-    if ($confirm -ne "y" -and $confirm -ne "Y") {
-        exit 1
-    }
+    Write-Host "[WARN] Current arch is not ARM64" -ForegroundColor Yellow
+    Write-Host "[WARN] Current arch: $osArch" -ForegroundColor Yellow
 }
-Write-Host "[√] 系统架构: $osArch" -ForegroundColor Green
 
-# 切换到脚本所在目录
+# Switch to script directory
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceDir = Join-Path $scriptDir ".."
 Set-Location $sourceDir
 
-# 检查是否安装了 PyInstaller
+# Check PyInstaller
 if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
-    Write-Host "[i] 安装 PyInstaller..." -ForegroundColor Yellow
+    Write-Host "[INFO] Installing PyInstaller..." -ForegroundColor Yellow
     pip install pyinstaller
 }
 
-# 创建输出目录
-$binDir = Join-Path $scriptDir "..\..\..\bin"
-if (-not (Test-Path $binDir)) {
-    New-Item -ItemType Directory -Path $binDir | Out-Null
+# Create output directory
+$distDir = Join-Path $sourceDir "dist"
+if (-not (Test-Path $distDir)) {
+    New-Item -ItemType Directory -Path $distDir | Out-Null
 }
 
-Write-Host "[i] 开始打包..." -ForegroundColor Yellow
+Write-Host "[INFO] Building..." -ForegroundColor Yellow
 Write-Host ""
 
-# 执行打包
+# Build
 pyinstaller --onefile `
     --name winapp-mcp-arm64 `
     --clean `
@@ -52,24 +47,22 @@ pyinstaller --onefile `
     --hidden-import pydantic_settings `
     server.py
 
-if ($LASTEXITCODE -eq 0) {
+if ($LASTEXITCODE -ne 0) {
     Write-Host ""
-    Write-Host "[√] ARM64 打包成功!" -ForegroundColor Green
-
-    # 复制到 bin 目录
-    Copy-Item "dist\winapp-mcp-arm64.exe" -Destination $binDir -Force
-    Write-Host "[√] 已复制到 bin 目录" -ForegroundColor Green
-
-    Write-Host ""
-    Write-Host "输出文件:" -ForegroundColor Cyan
-    Get-ChildItem "$binDir\winapp-mcp-arm64.exe" | ForEach-Object {
-        Write-Host "  $($_.Name)  $([math]::Round($_.Length / 1MB, 2)) MB" -ForegroundColor White
-    }
-} else {
-    Write-Host ""
-    Write-Host "[!] 打包失败!" -ForegroundColor Red
-    exit 1
+    Write-Host "[ERROR] Build failed!" -ForegroundColor Red
+    exit $LASTEXITCODE
 }
 
 Write-Host ""
-Write-Host "完成!" -ForegroundColor Green
+Write-Host "[OK] Build success!" -ForegroundColor Green
+
+# Copy output to dist
+Copy-Item "dist\winapp-mcp-arm64.exe" -Destination $distDir -Force
+Write-Host "[OK] Build output: dist\winapp-mcp-arm64.exe" -ForegroundColor Green
+
+# Copy config file
+Copy-Item ".env.sample" -Destination $distDir -Force
+Write-Host "[OK] Config output: dist\.env.sample" -ForegroundColor Green
+
+Write-Host ""
+Write-Host "[DONE] Build finished." -ForegroundColor Green
