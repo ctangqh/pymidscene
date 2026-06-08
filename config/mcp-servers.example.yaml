@@ -1,0 +1,176 @@
+# ============================================================
+# Pymidscene MCP 服务器配置文件
+# ============================================================
+# 配置优先级: 环境变量 > 此文件 > 默认值
+#
+# 环境变量示例:
+#   MCP_LOG_LEVEL=DEBUG
+#   MCP_PORT_RANGE_START=5000
+#   MCP_PORT_RANGE_END=5500
+# ============================================================
+
+# -------------------- 全局配置 --------------------
+global:
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  log_level: INFO
+
+  # 是否启用指标收集
+  enable_metrics: true
+
+  # 端口范围（用于动态分配端口给 MCP Server）
+  port_range:
+    start: 4724    # WinAppDriver 默认是 4723，从下一个开始
+    end: 4999
+
+  # 连接池默认配置
+  default_pool:
+    min_size: 1        # 每个设备类型最小实例数
+    max_size: 5        # 每个设备类型最大实例数
+    acquire_timeout: 30 # 获取会话超时时间（秒）
+    auto_scale: true   # 是否自动扩缩容
+
+  # 分布式模式配置（第三阶段用）
+  distributed:
+    enabled: false
+    coordinator_url: "http://192.168.1.100:8080"
+    worker_id: "worker-01"
+    worker_tags: ["windows", "desktop", "chrome"]
+
+
+# -------------------- MCP 服务器列表 --------------------
+# 每个服务器都是独立的 MCP 端点，连接池会自动管理
+servers:
+  # ==================== WinApp (Windows 桌面自动化) ====================
+  winapp-main:
+    device_type: winapp
+    host: 127.0.0.1
+    port: 4724                  # 固定端口
+    auto_start: true            # 自动启动 WinAppDriver
+    start_command: "WinAppDriver.exe 127.0.0.1 4724"
+    health_check_url: "http://127.0.0.1:4724/status"
+    health_check_interval: 30
+    min_instances: 1            # 最少 1 个
+    max_instances: 3            # 最多 3 个并发
+    options:
+      implicit_wait: 10
+      page_load_timeout: 30
+
+  winapp-secondary:
+    device_type: winapp
+    host: 127.0.0.1
+    port: 4725                  # 第二个 WinAppDriver 实例
+    auto_start: true
+    start_command: "WinAppDriver.exe 127.0.0.1 4725"
+    health_check_url: "http://127.0.0.1:4725/status"
+    min_instances: 0            # 按需启动
+    max_instances: 1
+    options:
+      implicit_wait: 10
+
+  # ==================== Browser (Playwright 浏览器自动化) ====================
+  browser-chrome:
+    device_type: browser
+    host: 127.0.0.1
+    port: 5001
+    auto_start: true
+    # 使用官方 Playwright MCP Server
+    start_command: "npx -y @playwright/mcp-server --port 5001 --browser chromium"
+    health_check_url: "http://127.0.0.1:5001/health"
+    health_check_interval: 30
+    min_instances: 2            # 浏览器池大一点
+    max_instances: 5
+    options:
+      headless: true
+      viewport_width: 1920
+      viewport_height: 1080
+      accept_downloads: true
+
+  browser-firefox:
+    device_type: browser
+    host: 127.0.0.1
+    port: 5002
+    auto_start: true
+    start_command: "npx -y @playwright/mcp-server --port 5002 --browser firefox"
+    health_check_url: "http://127.0.0.1:5002/health"
+    min_instances: 1
+    max_instances: 3
+    options:
+      headless: true
+
+  # ==================== Hypium (移动端自动化) ====================
+  hypium-android-01:
+    device_type: hypium
+    host: 127.0.0.1
+    port: 6001
+    auto_start: true
+    start_command: "hypium-mcp-server --port 6001 --device serial-number-001"
+    health_check_url: "http://127.0.0.1:6001/status"
+    min_instances: 1
+    max_instances: 1            # 手机通常一对一
+    options:
+      platform: Android
+      device_name: "Pixel 7"
+      udid: "serial-number-001"
+
+  hypium-android-02:
+    device_type: hypium
+    host: 127.0.0.1
+    port: 6002
+    auto_start: true
+    start_command: "hypium-mcp-server --port 6002 --device serial-number-002"
+    health_check_url: "http://127.0.0.1:6002/status"
+    min_instances: 1
+    max_instances: 1
+    options:
+      platform: Android
+      device_name: "Pixel 8"
+      udid: "serial-number-002"
+
+  hypium-ios-01:
+    device_type: hypium
+    host: 127.0.0.1
+    port: 6101
+    auto_start: true
+    start_command: "hypium-mcp-server --port 6101 --device ios-udid-001"
+    health_check_url: "http://127.0.0.1:6101/status"
+    min_instances: 1
+    max_instances: 1
+    options:
+      platform: iOS
+      device_name: "iPhone 15"
+      udid: "ios-udid-001"
+
+  # ==================== Appium (移动端备选) ====================
+  appium-android:
+    device_type: appium
+    host: 127.0.0.1
+    port: 4723
+    auto_start: false  # Appium 通常手动启动
+    health_check_url: "http://127.0.0.1:4723/wd/hub/status"
+    min_instances: 1
+    max_instances: 2
+    options:
+      platformName: Android
+      automationName: UiAutomator2
+
+  # ==================== 远程 MCP Server 示例 ====================
+  remote-winapp:
+    device_type: winapp
+    host: 192.168.1.100        # 另一台 Windows 机器
+    port: 4724
+    auto_start: false           # 远程机器不自动启动
+    health_check_url: "http://192.168.1.100:4724/status"
+    health_check_interval: 60
+    min_instances: 0
+    max_instances: 2
+    api_key: "your-api-key-here"  # 如果需要认证
+
+  # ==================== 动态端口示例 ====================
+  dynamic-browser:
+    device_type: browser
+    host: 127.0.0.1
+    port: null                  # null = 动态分配端口
+    auto_start: true
+    start_command: "npx -y @playwright/mcp-server --port {port}"  # {port} 会被替换
+    min_instances: 0
+    max_instances: 10           # 动态扩展到 10 个

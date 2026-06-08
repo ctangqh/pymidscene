@@ -25,3 +25,11 @@ output/
 # OS
 .DS_Store
 Thumbs.db
+
+# Build
+*.egg-info/
+dist/
+build/
+
+# Hermes
+.hermes/
