@@ -65,15 +65,30 @@ class Settings(BaseSettings):
     )
     VISION_API_KEY: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("VISION_API_KEY", "OPENAI_VISION_API_KEY", "DOUBAN_VISION_API_KEY"),
+        validation_alias=AliasChoices(
+            "VISION_API_KEY",
+            "OPENAI_VISION_API_KEY",
+            "DOUBAN_VISION_API_KEY",
+            "VISION_OPENAI_API_KEY",
+        ),
     )
     VISION_BASE_URL: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("VISION_BASE_URL", "OPENAI_VISION_BASE_URL", "DOUBAN_VISION_BASE_URL"),
+        validation_alias=AliasChoices(
+            "VISION_BASE_URL",
+            "OPENAI_VISION_BASE_URL",
+            "DOUBAN_VISION_BASE_URL",
+            "VISION_OPENAI_BASE_URL",
+        ),
     )
     VISION_MODEL: Optional[str] = Field(
         default=None,
-        validation_alias=AliasChoices("VISION_MODEL", "OPENAI_VISION_MODEL", "DOUBAN_VISION_MODEL"),
+        validation_alias=AliasChoices(
+            "VISION_MODEL",
+            "OPENAI_VISION_MODEL",
+            "DOUBAN_VISION_MODEL",
+            "VISION_OPENAI_MODEL",
+        ),
     )
 
     # 模型运行时
@@ -107,6 +122,19 @@ class Settings(BaseSettings):
     LOCATE_CONFIDENCE_THRESHOLD: float = 0.7
     LOCATE_MAX_RETRIES: int = 2
     LOCATE_USE_VISION: bool = True
+
+    ANOMALY_GUARD_ENABLED: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ANOMALY_GUARD_ENABLED", "POPUP_GUARD_ENABLED"),
+    )
+    ANOMALY_DETECT_CONFIDENCE_THRESHOLD: float = Field(
+        default=0.7,
+        validation_alias=AliasChoices("ANOMALY_DETECT_CONFIDENCE_THRESHOLD", "POPUP_DETECT_CONFIDENCE_THRESHOLD"),
+    )
+    ANOMALY_DEBUG_SAVE_DIR: str = Field(
+        default="./output/anomaly_debug",
+        validation_alias=AliasChoices("ANOMALY_DEBUG_SAVE_DIR", "POPUP_DEBUG_SAVE_DIR"),
+    )
 
     # 报告配置
     REPORT_SAVE_DIR: str = "./output/reports"
@@ -237,6 +265,18 @@ class Settings(BaseSettings):
     @property
     def OPENAI_VISION_MODEL(self) -> str:
         return self.vision_config.model
+
+    @property
+    def POPUP_GUARD_ENABLED(self) -> bool:
+        return self.ANOMALY_GUARD_ENABLED
+
+    @property
+    def POPUP_DETECT_CONFIDENCE_THRESHOLD(self) -> float:
+        return self.ANOMALY_DETECT_CONFIDENCE_THRESHOLD
+
+    @property
+    def POPUP_DEBUG_SAVE_DIR(self) -> str:
+        return self.ANOMALY_DEBUG_SAVE_DIR
 
     @property
     def DOUBAN_API_KEY(self) -> Optional[str]:

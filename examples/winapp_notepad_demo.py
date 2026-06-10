@@ -10,6 +10,9 @@ This demo demonstrates:
 import os
 import sys
 import time
+import json
+import base64
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # Add src to path
@@ -18,28 +21,159 @@ sys.path.insert(0, str(project_root / "src"))
 
 from sdk.pymidscene import PyMidscene
 from common.logger import logger
+from common.config import settings
+from core.anomaly_guard import UIAnomalyGuard
+from core.visualizer import annotate_screenshot, format_box_label
 
 CURRENT_PROVIDER = "openai"
 CURRENT_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3"
 CURRENT_LLM_MODEL = "Doubao-Seed-2.0-pro"
 
 
-def main():
-    llm_provider = CURRENT_PROVIDER
-    llm_options = {
-        "base_url": os.getenv("LLM_BASE_URL", CURRENT_BASE_URL),
-        "model": os.getenv("LLM_MODEL", os.getenv("PYMID_LLM_MODEL", CURRENT_LLM_MODEL)),
-        "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
+def extract_source_xml(source_text: str) -> str:
+    if not source_text:
+        return ""
+    try:
+        payload = json.loads(source_text)
+    except json.JSONDecodeError:
+        return source_text
+    if isinstance(payload, dict):
+        value = payload.get("value")
+        if isinstance(value, str):
+            return value
+    return source_text
+
+
+def find_named_element_center(source_text: str, target_name: str):
+    xml_text = extract_source_xml(source_text)
+    if not xml_text:
+        return None
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+
+    for node in root.iter():
+        if node.attrib.get("Name") != target_name:
+            continue
+        try:
+            x = float(node.attrib["x"])
+            y = float(node.attrib["y"])
+            width = float(node.attrib["width"])
+            height = float(node.attrib["height"])
+        except (KeyError, ValueError):
+            continue
+        return (x + width / 2.0, y + height / 2.0)
+    return None
+
+
+def find_root_window_center(source_text: str):
+    xml_text = extract_source_xml(source_text)
+    if not xml_text:
+        return None
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    try:
+        x = float(root.attrib["x"])
+        y = float(root.attrib["y"])
+        width = float(root.attrib["width"])
+        height = float(root.attrib["height"])
+    except (KeyError, ValueError):
+        return None
+    return (x + width / 2.0, y + height / 2.0)
+
+
+def has_unsaved_dialog_controls(source_text: str) -> bool:
+    xml_text = extract_source_xml(source_text)
+    if not xml_text:
+        return False
+    return any(name in xml_text for name in ("不保存", "保存", "取消"))
+
+
+def collect_all_element_annotations(source_text: str):
+    xml_text = extract_source_xml(source_text)
+    if not xml_text:
+        return []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    annotations = []
+    for node in root.iter():
+        try:
+            x = float(node.attrib["x"])
+            y = float(node.attrib["y"])
+            width = float(node.attrib["width"])
+            height = float(node.attrib["height"])
+        except (KeyError, ValueError):
+            continue
+
+        if width <= 0 or height <= 0:
+            continue
+
+        rect = {
+            "left": x,
+            "top": y,
+            "width": width,
+            "height": height,
+        }
+        control_type = node.attrib.get("LocalizedControlType") or node.tag or "element"
+        name = (node.attrib.get("Name") or "").strip()
+        label = format_box_label(rect, control_type)
+        if name:
+            label = f"{label}\n{name}"
+        annotations.append({"rect": rect, "label": label})
+    return annotations
+
+
+def save_ui_snapshot_artifacts(midscene: PyMidscene, artifact_prefix: str):
+    source_text = midscene.device.get_page_content()
+    xml_text = extract_source_xml(source_text)
+    screenshot_b64 = midscene.device.screenshot_base64()
+    annotations = collect_all_element_annotations(source_text)
+
+    output_dir = project_root / "output" / "ui_debug"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_path = output_dir / f"{artifact_prefix}_raw.png"
+    annotated_path = output_dir / f"{artifact_prefix}_all_controls.png"
+    source_path = output_dir / f"{artifact_prefix}_source.xml"
+
+    raw_path.write_bytes(base64.b64decode(screenshot_b64))
+    source_path.write_text(xml_text, encoding="utf-8")
+    annotate_screenshot(screenshot_b64, annotations, str(annotated_path))
+
+    logger.info(
+        f"Saved UI snapshot artifacts: raw={raw_path}, "
+        f"annotated={annotated_path}, source={source_path}, controls={len(annotations)}"
+    )
+
+    return {
+        "raw_path": raw_path,
+        "annotated_path": annotated_path,
+        "source_path": source_path,
+        "control_count": len(annotations),
     }
 
-    vision_provider = CURRENT_PROVIDER
+
+def main():
+    llm_provider = settings.llm_config.provider or CURRENT_PROVIDER
+    llm_options = {
+        "base_url": settings.llm_config.base_url or CURRENT_BASE_URL,
+        "model": settings.llm_config.model or CURRENT_LLM_MODEL,
+        "api_key": settings.llm_config.api_key,
+    }
+
+    vision_provider = settings.vision_config.provider or llm_provider
     vision_options = {
         key: value
         for key, value in {
-            # 当前环境未单独配置视觉模型时，默认复用通用模型参数。
-            "model": os.getenv("VISION_MODEL", os.getenv("PYMID_VISION_MODEL", llm_options["model"])),
-            "base_url": os.getenv("VISION_BASE_URL", os.getenv("PYMID_VISION_BASE_URL", llm_options["base_url"])),
-            "api_key": os.getenv("VISION_API_KEY", os.getenv("PYMID_VISION_API_KEY", llm_options["api_key"])),
+            "model": settings.vision_config.model,
+            "base_url": settings.vision_config.base_url,
+            "api_key": settings.vision_config.api_key,
         }.items()
         if value
     }
@@ -53,10 +187,12 @@ def main():
         vision_options=vision_options,
         device_options={
             "mcp_name": "winapp",  # Matches settings.MCP_SERVERS
+            "mcp_server_url": os.getenv("WINAPP_MCP_URL") or (settings.MCP_SERVERS.get("winapp").url if settings.MCP_SERVERS.get("winapp") else ""),
         }
     )
 
     try:
+        run_id = int(time.time() * 1000)
         logger.info("Starting WinApp MCP Demo...")
         logger.info(f"LLM model: {llm_options['model']}, Vision model: {vision_options.get('model')}")
 
@@ -80,12 +216,54 @@ def main():
         midscene.input("文本编辑器", "Hello PyMidscene")
 
         # 5. Take a screenshot via MCP tool
-        output_path = project_root / "output" / "notepad_screenshot.png"
+        output_path = project_root / "output" / f"notepad_screenshot_{run_id}.png"
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Taking screenshot: {output_path}")
         img_bytes = midscene.screenshot(str(output_path))
         logger.info(f"Screenshot saved: {output_path} ({len(img_bytes)} bytes)")
+
+        try:
+            focus_source = midscene.device.get_page_content()
+            window_pos = find_root_window_center(focus_source)
+            if window_pos:
+                midscene.device.click(position=window_pos)
+                time.sleep(0.3)
+            focus_pos = find_named_element_center(focus_source, "文本编辑器")
+            if focus_pos:
+                midscene.device.click(position=focus_pos)
+                time.sleep(0.5)
+        except Exception:
+            pass
+
+        logger.info("Sending Alt+F4 to trigger the unsaved-changes dialog...")
+        guard_result = midscene.keyboard_press("Alt+F4")
+        logger.info(f"Alt+F4 anomaly-guard result: {guard_result}")
+        time.sleep(1)
+
+        logger.info("Saving the first close-state UI snapshot with all detected control bounding boxes...")
+        first_close_artifacts = save_ui_snapshot_artifacts(midscene, f"{run_id}_notepad_close_state_step1")
+
+        page_source_after_first_close = midscene.device.get_page_content()
+        if not has_unsaved_dialog_controls(page_source_after_first_close):
+            logger.info("Unsaved-changes dialog not visible after the first Alt+F4, sending Alt+F4 again...")
+            midscene.keyboard_press("Alt+F4")
+            time.sleep(1)
+            logger.info("Saving the second close-state UI snapshot with all detected control bounding boxes...")
+            save_ui_snapshot_artifacts(midscene, f"{run_id}_notepad_close_state_step2")
+        else:
+            logger.info(
+                f"Unsaved-changes dialog controls detected after the first close click: {first_close_artifacts['source_path']}"
+            )
+
+        logger.info("Trying to resolve the unsaved-changes dialog via UIAnomalyGuard...")
+        final_guard_result = UIAnomalyGuard(
+            midscene.device,
+            llm=midscene.llm,
+            vision_llm=midscene.vision_model or midscene.llm,
+        ).handle_sync("dismiss_unsaved_changes_dialog")
+        logger.info(f"Final anomaly-guard result: {final_guard_result}")
+        time.sleep(2)
 
         logger.info("Demo completed successfully!")
 
@@ -93,6 +271,16 @@ def main():
         logger.error(f"Demo failed: {e}")
     finally:
         # 6. Cleanup - close session and MCP connection
+        try:
+            # Cleanup only: if the save dialog is still present, close it deterministically.
+            page_source = midscene.device.get_page_content()
+            dont_save_button = find_named_element_center(page_source, "不保存")
+            if dont_save_button:
+                logger.info("Cleanup: clicking '不保存' to close the remaining save dialog.")
+                midscene.device.click(position=dont_save_button)
+                time.sleep(1)
+        except Exception:
+            pass
         try:
             midscene.device._execute_mcp_action("delete_session")
             logger.info("Session closed.")

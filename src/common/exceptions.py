@@ -73,6 +73,11 @@ class ActionExecutionError(BrowserError):
     message = "动作执行失败"
 
 
+class SystemDialogDetectedError(BrowserError):
+    code = 30005
+    message = "检测到 Web 原生系统弹窗"
+
+
 # ========== 定位相关异常 ==========
 class LocatorError(PyMidsceneBaseException):
     code = 40000
@@ -129,6 +134,7 @@ __all__ = [
     "BrowserNavigationError",
     "ElementNotFoundError",
     "ActionExecutionError",
+    "SystemDialogDetectedError",
     "LocatorError",
     "LocateConfidenceLowError",
     "TaskError",

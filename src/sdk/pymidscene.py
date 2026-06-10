@@ -12,6 +12,7 @@ from common.exceptions import ActionExecutionError, AssertionError
 import time
 import json
 import re
+from core.anomaly_guard import UIAnomalyGuard
 
 
 class PyMidscene:
@@ -136,21 +137,26 @@ class PyMidscene:
         """跳转到指定 URL"""
         if not self._launched:
             self.launch()
+        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
         self.device.goto(url, **kwargs)
+        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
     
     def click(self, element_description: str, **kwargs) -> None:
         """
         通过自然语言描述点击元素
         """
         logger.info(f"点击元素: {element_description}")
+        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("click")
         position = self.locator.locate(element_description, **kwargs)
         self.device.click(position=position)
+        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("click")
     
     def input(self, element_description: str, text: str, **kwargs) -> None:
         """
         通过自然语言描述输入文本
         """
         logger.info(f"向 {element_description} 输入文本: {text}")
+        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("input")
         position = self.locator.locate(element_description, **kwargs)
         interface_type = getattr(self.device, "interface_type", "")
         selector = getattr(self.locator.last_result, "selector", None)
@@ -161,6 +167,7 @@ class PyMidscene:
             # Native clients often need an explicit focus step before text input.
             self.device.click(position=position)
         self.device.input(text, position=position)
+        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("input")
     
     def extract(self, extract_description: str, **kwargs) -> Dict[str, Any]:
         """
@@ -188,6 +195,16 @@ class PyMidscene:
         from pathlib import Path
         path_obj: Optional[Path] = Path(save_path) if save_path is not None else None
         return self.device.screenshot(path_obj, **kwargs)
+
+    def keyboard_press(self, key_name: str, **kwargs) -> Optional[Dict[str, Any]]:
+        """按下快捷键，并在前后执行异常页面检测"""
+        guard = UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm)
+        before_result = guard.handle_sync(f"before_keyboard_press_{key_name}")
+        logger.debug(f"[PyMidscene] keyboard_press before-guard result: key={key_name}, result={before_result}")
+        self.device.keyboard_press(key_name, **kwargs)
+        after_result = guard.handle_sync(f"after_keyboard_press_{key_name}")
+        logger.debug(f"[PyMidscene] keyboard_press after-guard result: key={key_name}, result={after_result}")
+        return after_result
     
     # === New Agent-based methods ===
     

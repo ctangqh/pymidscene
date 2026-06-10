@@ -776,6 +776,8 @@ class Agent:
     
     async def _execute_action_directly(self, action_type: str, param: Dict) -> Any:
         """Execute an action directly on the device (fallback when TaskExecutor is not available)"""
+        from ..anomaly_guard import UIAnomalyGuard
+        await UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_llm).handle(f"before_{action_type}")
         locate_info = param.get("locate", {})
         
         # Get UI context for coordinate conversion
@@ -826,7 +828,8 @@ class Agent:
                     key_name = param.get("key_name", "")
                     if hasattr(self.device, 'keyboard_press'):
                         self.device.keyboard_press(key_name)
-        
+
+        await UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_llm).handle(f"after_{action_type}")
         return None
     
     # ==================== Report ====================

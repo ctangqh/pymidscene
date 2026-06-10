@@ -319,10 +319,14 @@ class Service:
         **kwargs,
     ) -> str:
         if screenshot_base64:
-            content = [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}},
-            ]
+            base_url = str(getattr(llm, "base_url", "") or "").lower()
+            if "api.deepseek.com" in base_url:
+                content = f"{prompt}\n\n![image](data:image/png;base64,{screenshot_base64})"
+            else:
+                content = [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}},
+                ]
         else:
             content = prompt
         messages = [{"role": "user", "content": content}]
@@ -341,7 +345,15 @@ class Service:
         except Exception:
             match = re.search(r"```(?:json)?\s*(.*?)\s*```", response, re.DOTALL)
             json_text = match.group(1) if match else response
-            parsed = json.loads(json_text)
+            try:
+                parsed = json.loads(json_text)
+            except Exception:
+                start = json_text.find("{")
+                end = json_text.rfind("}")
+                if start >= 0 and end > start:
+                    parsed = json.loads(json_text[start : end + 1])
+                else:
+                    raise
         if not isinstance(parsed, dict):
             raise ModelResponseError(f"Model response is not a JSON object: {response}")
         return parsed

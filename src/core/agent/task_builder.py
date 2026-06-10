@@ -308,6 +308,7 @@ class TaskBuilder:
 
     def _make_action_executor(self, action_type: str):
         async def executor(param, task_context):
+            from ..anomaly_guard import UIAnomalyGuard
             param = param or {}
             element = None
             for value in param.values():
@@ -325,6 +326,13 @@ class TaskBuilder:
                 import asyncio
                 await asyncio.sleep((param.get("timeMs") or param.get("time_ms") or 1000) / 1000)
                 return {"output": None}
+
+            guard = UIAnomalyGuard(self.device, llm=getattr(self.service, "llm", None))
+            try:
+                await guard.handle(f"before_{action_type}")
+            except Exception:
+                raise
+
             if action_type == "Tap":
                 self.device.click(position=position)
             elif action_type == "RightClick":
@@ -351,5 +359,10 @@ class TaskBuilder:
                 return {"output": None}
             else:
                 raise ValueError(f"Unsupported action type: {action_type}")
+
+            try:
+                await guard.handle(f"after_{action_type}")
+            except Exception:
+                raise
             return {"output": None}
         return executor

@@ -338,6 +338,61 @@ func pasteText(text string) error {
 	return nil
 }
 
+func (c *WDClient) PressKeys(keys string) error {
+	sess := c.getSession()
+	if sess == "" {
+		return fmt.Errorf("no active session")
+	}
+	return sendWinAppKeys(keys)
+}
+
+func sendWinAppKeys(keys string) error {
+	keySequence := normalizeSendKeys(keys)
+	if keySequence == "" {
+		return fmt.Errorf("empty key sequence")
+	}
+	cmd := exec.Command(
+		"powershell",
+		"-NoProfile",
+		"-Command",
+		"Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 100; [System.Windows.Forms.SendKeys]::SendWait($env:PYMID_KEYS)",
+	)
+	cmd.Env = append(os.Environ(), "PYMID_KEYS="+keySequence)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("send keys failed: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func normalizeSendKeys(keys string) string {
+	keys = strings.TrimSpace(keys)
+	if keys == "" {
+		return ""
+	}
+
+	upper := strings.ToUpper(keys)
+	switch upper {
+	case "ALT+F4":
+		return "%{F4}"
+	case "CTRL+S":
+		return "^s"
+	case "CTRL+SHIFT+S":
+		return "^+s"
+	case "ESC", "ESCAPE":
+		return "{ESC}"
+	case "ENTER":
+		return "{ENTER}"
+	case "TAB":
+		return "{TAB}"
+	}
+
+	if strings.ContainsAny(keys, "^%+{}") {
+		return keys
+	}
+	return keys
+}
+
 func (c *WDClient) ClearElement(elementID string) error {
 	sess := c.getSession()
 	if sess == "" {
@@ -734,6 +789,14 @@ func toolSendKeys(args map[string]interface{}) (interface{}, error) {
 	return ToolResult{Content: []ContentBlock{ContentBlock{Type: "text", Text: fmt.Sprintf("Sent global keys: %s", keys)}}, IsError: false}, nil
 }
 
+func toolPressKeys(args map[string]interface{}) (interface{}, error) {
+	keys := getString(args, "keys")
+	if err := wd.PressKeys(keys); err != nil {
+		return ToolResult{Content: []ContentBlock{ContentBlock{Type: "text", Text: fmt.Sprintf("ERROR: press keys failed: %v", err)}}, IsError: true}, nil
+	}
+	return ToolResult{Content: []ContentBlock{ContentBlock{Type: "text", Text: fmt.Sprintf("Pressed keys: %s", keys)}}, IsError: false}, nil
+}
+
 func toolClearElement(args map[string]interface{}) (interface{}, error) {
 	selector := getString(args, "selector")
 	using := getStringWithDefault(args, "using", "accessibility id")
@@ -807,6 +870,7 @@ func main() {
 	s.AddTool("winapp_click_element", "Click an element by selector", toolClickElement)
 	s.AddTool("winapp_click", "Click at screen coordinates", toolClick)
 	s.AddTool("winapp_send_keys", "Send text to an element or active window", toolSendKeys)
+	s.AddTool("winapp_press_keys", "Send keyboard shortcut keys to the active window", toolPressKeys)
 	s.AddTool("winapp_clear_element", "Clear text from an element", toolClearElement)
 
 	addr := fmt.Sprintf("%s:%d", cfg.MCPHost, cfg.MCPPort)

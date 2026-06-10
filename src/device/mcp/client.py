@@ -395,6 +395,7 @@ class McpWinAppDevice(BaseMcpDevice):
             "screenshot": {"tool": "winapp_screenshot"},
             "click": {"tool": "winapp_click", "mapper": lambda **k: {"x": int(k.get("position", (0, 0))[0]), "y": int(k.get("position", (0, 0))[1])}},
             "input": {"tool": "winapp_send_keys", "mapper": lambda **k: {"selector": k.get("selector"), "keys": k.get("text")}},
+            "keyboard_press": {"tool": "winapp_press_keys", "mapper": lambda **k: {"keys": k.get("key")}},
             "clear": {"tool": "winapp_clear_element"},
             # AI Actions
             "ai_click": {"tool": "winapp_ai_click"},
