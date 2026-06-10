@@ -1,50 +1,10 @@
-import base64
 from typing import List, Dict, Any
 
 from openai import OpenAI
 from .base import BaseLLM
+from .types import ModelCapabilities, DEFAULT_IMAGE_CONSTRAINTS
 from common.config import settings
 from common.exceptions import MissingAPIKeyError
-
-
-def _convert_openai_multimodal_to_deepseek(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    converted: List[Dict[str, Any]] = []
-    for msg in messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            converted.append(msg)
-            continue
-
-        parts: List[str] = []
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            ptype = part.get("type")
-            if ptype == "text":
-                text = part.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-                continue
-            if ptype == "image_url":
-                image_url = part.get("image_url") or {}
-                url = image_url.get("url") if isinstance(image_url, dict) else None
-                url = url if isinstance(url, str) else ""
-                if url.startswith("data:") and ";base64," in url:
-                    b64 = url.split(";base64,", 1)[1]
-                    try:
-                        base64.b64decode(b64, validate=False)
-                        parts.append(f"![image]({url})")
-                        continue
-                    except Exception:
-                        pass
-                if url:
-                    parts.append(f"![image]({url})")
-                continue
-
-        msg2 = dict(msg)
-        msg2["content"] = "\n\n".join(parts).strip()
-        converted.append(msg2)
-    return converted
 
 
 class OpenAILLM(BaseLLM):
@@ -62,11 +22,67 @@ class OpenAILLM(BaseLLM):
         self.model = self.model or llm_config.model
         
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities(
+            supports_text=True,
+            supports_vision=True,
+            supports_structured_output=False,
+            supports_system_prompt=True,
+            supports_tool_calling=False,
+            supports_data_url=True,
+            supports_multiple_images=False,
+            image_constraints=DEFAULT_IMAGE_CONSTRAINTS,
+        )
+
+    def encode_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        encoded: List[Dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                encoded.append(msg)
+                continue
+
+            encoded_content: List[Dict[str, Any]] = []
+            image_slots: List[int] = []
+            images = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = part.get("type")
+                if ptype == "text":
+                    encoded_content.append({"type": "text", "text": str(part.get("text") or "")})
+                    continue
+                if ptype == "image":
+                    image = part.get("image")
+                    if image is None:
+                        continue
+                    image_slots.append(len(encoded_content))
+                    encoded_content.append({"type": "image_url", "image_url": {"url": ""}})
+                    images.append(image)
+                    continue
+                if ptype == "image_url":
+                    encoded_content.append(part)
+                    continue
+                encoded_content.append(part)
+
+            if images:
+                prepared_images = self.prepare_images(images)
+                for slot, result in zip(image_slots, prepared_images):
+                    encoded_content[slot] = {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{result.image.mime_type};base64,{result.image.to_base64()}"
+                        },
+                    }
+
+            msg2 = dict(msg)
+            msg2["content"] = encoded_content
+            encoded.append(msg2)
+        return encoded
     
     def _chat(self, messages: List[Dict[str, Any]], **kwargs) -> str:
-        base_url = (self.base_url or "").lower()
-        if "api.deepseek.com" in base_url:
-            messages = _convert_openai_multimodal_to_deepseek(messages)
         response = self.client.chat.completions.create(
             model=kwargs.get("model", self.model),
             messages=messages,

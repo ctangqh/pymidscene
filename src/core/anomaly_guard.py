@@ -1,6 +1,5 @@
 import base64
 import json
-import re
 import time
 from io import BytesIO
 from pathlib import Path
@@ -8,29 +7,10 @@ from typing import Any, Dict, Optional, Tuple, List
 
 from common.config import settings
 from common.exceptions import ActionExecutionError, SystemDialogDetectedError
+from common.json_utils import parse_relaxed_json_object
 from common.logger import logger
+from llm import MessageBuilder
 from .visualizer import annotate_screenshot, format_box_label
-
-
-def _parse_json_object(text: str) -> Dict[str, Any]:
-    try:
-        json_repair = __import__("json_repair")
-        parsed = json_repair.loads(text)
-    except Exception:
-        match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
-        json_text = match.group(1) if match else text
-        try:
-            parsed = json.loads(json_text)
-        except Exception:
-            start = json_text.find("{")
-            end = json_text.rfind("}")
-            if start >= 0 and end > start:
-                parsed = json.loads(json_text[start : end + 1])
-            else:
-                raise
-    if not isinstance(parsed, dict):
-        return {}
-    return parsed
 
 
 def _center_from_ltrb(bbox: Dict[str, Any]) -> Optional[Tuple[float, float]]:
@@ -159,34 +139,28 @@ class UIAnomalyGuard:
         self.llm = llm
         self.vision_llm = vision_llm or llm
 
-    def _is_deepseek(self, llm: Any) -> bool:
-        base_url = str(getattr(llm, "base_url", "") or "").lower()
-        return "api.deepseek.com" in base_url
-
     async def _chat_with_screenshot(self, llm, prompt: str, screenshot_b64: str) -> str:
-        content: Any
         if screenshot_b64:
-            if self._is_deepseek(llm):
-                content = f"{prompt}\n\n![image](data:image/png;base64,{screenshot_b64})"
-            else:
-                content = [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
-                ]
+            messages = [MessageBuilder.user_text_with_image_base64(prompt, screenshot_b64, mime_type="image/png")]
         else:
-            content = prompt
-        messages = [{"role": "user", "content": content}]
-        chat = getattr(llm, "chat", None) or getattr(llm, "_chat", None)
-        if not chat:
-            raise ValueError("LLM instance does not provide chat or _chat")
-        resp = chat(messages, max_tokens=1400)
+            messages = [MessageBuilder.user_text(prompt)]
+        chat = getattr(llm, "chat", None)
+        if callable(chat):
+            resp = chat(messages, max_tokens=1400)
+        else:
+            raw_chat = getattr(llm, "_chat", None)
+            if not callable(raw_chat):
+                raise ValueError("LLM instance does not provide chat or _chat")
+            encode_messages = getattr(llm, "encode_messages", None)
+            encoded_messages = encode_messages(messages) if callable(encode_messages) else messages
+            resp = raw_chat(encoded_messages, max_tokens=1400)
         if hasattr(resp, "__await__"):
             resp = await resp
         return str(resp or "")
 
     async def _chat_json(self, llm, prompt: str, screenshot_b64: str) -> Dict[str, Any]:
         resp = await self._chat_with_screenshot(llm, prompt, screenshot_b64)
-        return _parse_json_object(resp)
+        return parse_relaxed_json_object(resp, context="anomaly guard model response")
 
     async def detect_page_anomaly(self, action_name: str, screenshot_b64: Optional[str] = None) -> Dict[str, Any]:
         if not settings.ANOMALY_GUARD_ENABLED:

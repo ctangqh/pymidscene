@@ -71,7 +71,10 @@ class PyMidscene:
         options.setdefault("max_retries", vision_config.max_retries)
 
         try:
-            return get_llm(provider, **options)
+            vision_llm = get_llm(provider, **options)
+            if not getattr(vision_llm.capabilities, "supports_vision", False):
+                raise ValueError(f"provider '{provider}' does not support vision")
+            return vision_llm
         except Exception as e:
             if vision_provider or vision_options:
                 raise

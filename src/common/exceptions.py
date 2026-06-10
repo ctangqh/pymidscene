@@ -47,6 +47,31 @@ class ModelUnsupportedError(ModelError):
     message = "不支持的模型提供商"
 
 
+class ImageConstraintError(ModelError):
+    code = 20004
+    message = "图片不满足模型约束"
+
+
+class UnsupportedImageMimeTypeError(ImageConstraintError):
+    code = 20005
+    message = "不支持的图片格式"
+
+
+class ImageTooLargeError(ImageConstraintError):
+    code = 20006
+    message = "图片尺寸或体积超限"
+
+
+class TooManyImagesError(ImageConstraintError):
+    code = 20007
+    message = "图片数量超限"
+
+
+class ImagePreprocessFailedError(ImageConstraintError):
+    code = 20008
+    message = "图片预处理失败"
+
+
 # ========== 浏览器相关异常 ==========
 class BrowserError(PyMidsceneBaseException):
     code = 30000
@@ -129,6 +154,11 @@ __all__ = [
     "ModelTimeoutError",
     "ModelResponseError",
     "ModelUnsupportedError",
+    "ImageConstraintError",
+    "UnsupportedImageMimeTypeError",
+    "ImageTooLargeError",
+    "TooManyImagesError",
+    "ImagePreprocessFailedError",
     "BrowserError",
     "BrowserLaunchError",
     "BrowserNavigationError",

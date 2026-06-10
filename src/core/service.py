@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import json
-import re
 import time
 from io import BytesIO
 from typing import Optional, List, Dict, Any, Tuple, Union, Callable
@@ -11,8 +10,10 @@ from .types import (
     ServiceExtractOption, ServiceExtractParam, ServiceDump,
     UIContext, AIUsageInfo, Rect, ElementCacheFeature,
 )
+from common.json_utils import parse_relaxed_json_object
 from common.logger import logger
 from common.exceptions import ModelResponseError, ElementNotFoundError
+from llm import MessageBuilder
 
 
 class ServiceError(Exception):
@@ -319,44 +320,25 @@ class Service:
         **kwargs,
     ) -> str:
         if screenshot_base64:
-            base_url = str(getattr(llm, "base_url", "") or "").lower()
-            if "api.deepseek.com" in base_url:
-                content = f"{prompt}\n\n![image](data:image/png;base64,{screenshot_base64})"
-            else:
-                content = [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}},
-                ]
+            messages = [MessageBuilder.user_text_with_image_base64(prompt, screenshot_base64, mime_type="image/png")]
         else:
-            content = prompt
-        messages = [{"role": "user", "content": content}]
-        chat = getattr(llm, "chat", None) or getattr(llm, "_chat", None)
-        if not chat:
-            raise ValueError("LLM instance does not provide chat or _chat")
-        response = chat(messages, **kwargs)
+            messages = [MessageBuilder.user_text(prompt)]
+        chat = getattr(llm, "chat", None)
+        if callable(chat):
+            response = chat(messages, **kwargs)
+        else:
+            raw_chat = getattr(llm, "_chat", None)
+            if not callable(raw_chat):
+                raise ValueError("LLM instance does not provide chat or _chat")
+            encode_messages = getattr(llm, "encode_messages", None)
+            encoded_messages = encode_messages(messages) if callable(encode_messages) else messages
+            response = raw_chat(encoded_messages, **kwargs)
         if asyncio.iscoroutine(response):
             response = await response
         return response
 
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
-        try:
-            json_repair = __import__("json_repair")
-            parsed = json_repair.loads(response)
-        except Exception:
-            match = re.search(r"```(?:json)?\s*(.*?)\s*```", response, re.DOTALL)
-            json_text = match.group(1) if match else response
-            try:
-                parsed = json.loads(json_text)
-            except Exception:
-                start = json_text.find("{")
-                end = json_text.rfind("}")
-                if start >= 0 and end > start:
-                    parsed = json.loads(json_text[start : end + 1])
-                else:
-                    raise
-        if not isinstance(parsed, dict):
-            raise ModelResponseError(f"Model response is not a JSON object: {response}")
-        return parsed
+        return parse_relaxed_json_object(response, context="service model response")
 
     def _format_data_demand(self, data_demand: Any) -> str:
         schema_source = data_demand.get("schema") if isinstance(data_demand, dict) and "schema" in data_demand else data_demand

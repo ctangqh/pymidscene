@@ -36,3 +36,6 @@ bin/
 
 # Hermes
 .hermes/
+
+# Local design docs
+design/
