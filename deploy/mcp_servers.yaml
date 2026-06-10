@@ -1,0 +1,62 @@
+# ============================================================
+# Pymidscene 多 MCP 服务器配置文件
+# ============================================================
+# 此文件用于配置多个 MCP (Model Context Protocol) 服务器实例。
+# 系统会自动加载此文件并合并到配置中。
+#
+# 配置项说明:
+#   url: 远程服务器地址 (仅用于 sse 或 http 传输)
+#   transport: 传输协议, 可选: sse, http, stdio
+#   command: 本地启动命令数组 (仅用于 stdio 传输)
+#   timeout: 请求超时时间 (秒)
+#   env: 环境变量字典 (仅用于 stdio 传输)
+# ============================================================
+
+# 1. Playwright MCP (远程 SSE 模式)
+playwright:
+  url: "http://127.0.0.1:55000/sse"
+  transport: "sse"
+  timeout: 60
+
+# 2. Windows App Driver MCP (远程 SSE 模式)
+winapp:
+  url: "http://127.0.0.1:55001/sse"
+  transport: "sse"
+  timeout: 120
+
+# 3. Hypium MCP (远程 SSE 模式)
+hypium:
+  url: "http://127.0.0.1:55002/sse"
+  transport: "sse"
+  timeout: 60
+
+# 4. Android MCP (远程 SSE 模式)
+android:
+  url: "http://127.0.0.1:55003/sse"
+  transport: "sse"
+  timeout: 60
+
+# 5. iOS MCP (远程 SSE 模式)
+ios:
+  url: "http://127.0.0.1:55004/sse"
+  transport: "sse"
+  timeout: 60
+
+# 6. 自定义名称的 MCP 实例示例
+my_remote_device:
+  url: "http://192.168.1.100:55005/sse"
+  transport: "sse"
+
+# ============================================================
+# 如何在代码中使用:
+# ============================================================
+# from device.factory import DeviceFactory
+#
+# # 1. 使用默认实例 (由 settings.DEFAULT_MCP_SERVER 指定)
+# device = DeviceFactory.create()
+#
+# # 2. 使用特定名称的配置实例
+# device = DeviceFactory.create("mcp_winapp", mcp_name="winapp")
+#
+# # 3. 使用自定义名称的实例
+# device = DeviceFactory.create("mcp_android", mcp_name="my_custom_android")

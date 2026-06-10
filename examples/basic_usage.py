@@ -4,14 +4,14 @@ import os
 from pymidscene import create_client
 
 # 配置 API 密钥（也可以放在 .env 文件中）
-os.environ["OPENAI_API_KEY"] = "sk-xxx"
-os.environ["OPENAI_BASE_URL"] = "https://api.openai.com/v1"  # 可以替换为代理地址
+os.environ["LLM_API_KEY"] = "sk-xxx"
+os.environ["LLM_BASE_URL"] = "https://api.openai.com/v1"  # 可以替换为代理地址
 
 
 def basic_usage():
     """基础使用示例"""
     with create_client(
-        browser_options={"headless": False},  # 显示浏览器窗口方便调试
+        device_options={"headless": False},  # 显示浏览器窗口方便调试
         llm_options={"model": "gpt-4o"}
     ) as client:
         # 跳转到百度

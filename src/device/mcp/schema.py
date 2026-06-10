@@ -5,6 +5,14 @@ MCP_TOOL_NAMES = [
     "ai_screenshot", "ai_scroll", "ai_wait_for", "ai_close"
 ]
 
+# 原生端源码/节点树工具名称约定
+NATIVE_SOURCE_TOOL_NAMES = [
+    "winapp_get_source",
+    "hypium_get_source",
+    "android_get_source",
+    "ios_get_source",
+]
+
 # 标准Playwright MCP工具Schema（兼容Claude官方Playwright MCP格式）
 STANDARD_PLAYWRIGHT_MCP_SCHEMA = {
     "playwright_create_context": {
@@ -63,4 +71,26 @@ STANDARD_PLAYWRIGHT_MCP_SCHEMA = {
         "type": "object",
         "properties": {"context_id": {"type": "string"}}
     }
+}
+
+# 标准原生端源码/节点树工具 Schema。
+# 约定这些工具返回 XML / JSON 文本形式的页面结构，供 SDK 的
+# get_page_content()/get_dom_tree() 与原生树回退定位逻辑复用。
+STANDARD_NATIVE_SOURCE_MCP_SCHEMA = {
+    "winapp_get_source": {
+        "type": "object",
+        "properties": {}
+    },
+    "hypium_get_source": {
+        "type": "object",
+        "properties": {}
+    },
+    "android_get_source": {
+        "type": "object",
+        "properties": {}
+    },
+    "ios_get_source": {
+        "type": "object",
+        "properties": {}
+    },
 }

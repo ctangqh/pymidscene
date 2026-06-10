@@ -1,12 +1,12 @@
 from typing import Optional, Tuple, Dict, Any, List, Union
 from pathlib import Path
-from playwright.sync_api import sync_playwright, Browser as PlaywrightBrowser, Page
+from playwright.sync_api import sync_playwright, Browser as PlaywrightInstance, Page
 from ..base import BaseDevice
 from common.logger import logger
 from common.exceptions import BrowserLaunchError, BrowserNavigationError, ActionExecutionError
 
-class PlaywrightBrowser(BaseDevice):
-    """Playwright浏览器实现"""
+class PlaywrightDevice(BaseDevice):
+    """Playwright Web 设备实现"""
 
     @property
     def interface_type(self) -> str:
@@ -19,7 +19,7 @@ class PlaywrightBrowser(BaseDevice):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._playwright = None
-        self._browser: Optional[PlaywrightBrowser] = None
+        self._browser: Optional[PlaywrightInstance] = None
         self._page: Optional[Page] = None
 
     def launch(self) -> None:
@@ -158,7 +158,6 @@ class PlaywrightBrowser(BaseDevice):
         except Exception as e:
             logger.error(f"滚动失败: {str(e)}")
             raise ActionExecutionError(f"滚动失败: {str(e)}") from e
-
     def wait_for_selector(self, selector: str, timeout: Optional[int] = None, **kwargs) -> bool:
         try:
             timeout = timeout or self.timeout
@@ -170,3 +169,6 @@ class PlaywrightBrowser(BaseDevice):
 
     def evaluate_script(self, script: str, *args) -> Any:
         return self._page.evaluate(script, *args)
+
+
+PlaywrightBrowser = PlaywrightDevice

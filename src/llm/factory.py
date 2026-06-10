@@ -30,7 +30,7 @@ class LLMFactory:
         :param kwargs: 额外参数，会传递给对应模型的构造函数
         :return: LLM 实例
         """
-        provider = (provider or settings.DEFAULT_LLM_PROVIDER).lower()
+        provider = (provider or settings.llm_config.provider).lower()
         
         if provider not in cls._providers:
             raise ModelUnsupportedError(f"不支持的 LLM 提供商：{provider}，支持的提供商：{list(cls._providers.keys())}")

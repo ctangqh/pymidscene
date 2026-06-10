@@ -11,8 +11,8 @@ services:
       - ~/.cache/uv:/root/.cache/uv  # uv缓存
       - ./output:/app/output  # 输出目录
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
       - DEBUG=1
       - PLAYWRIGHT_HEADLESS=false
     network_mode: host  # 方便本地调试

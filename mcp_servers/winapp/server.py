@@ -3,18 +3,78 @@ import base64
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
-# 确保打包后能正确导入同目录模块
+# 确保打包后能正确导入同目录模块以及 src 目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+project_root = os.path.dirname(os.path.dirname(current_dir))
+for d in [current_dir, os.path.join(project_root, "src")]:
+    if d not in sys.path:
+        sys.path.insert(0, d)
 
 from mcp.server.fastmcp import FastMCP
 from loguru import logger
 
 from config import winapp_settings
 from client import WinAppDriverClient
+
+# ==================== Local Device Wrapper for AI SDK ====================
+from device.base import BaseDevice
+
+class LocalWinAppDevice(BaseDevice):
+    """用于在 MCP Server 内部运行 PyMidscene 的本地设备封装"""
+    def __init__(self, client: WinAppDriverClient, **kwargs):
+        super().__init__(**kwargs)
+        self.client = client
+    
+    @property
+    def interface_type(self) -> str: return "windows"
+    def launch(self) -> None: pass # 已经由 server 启动
+    def close(self) -> None: pass
+    def goto(self, url: str, **kwargs) -> None: pass
+    def get_page_content(self) -> str: return self.client.get_page_source()
+    def get_dom_tree(self) -> Dict[str, Any]: return {"xml": self.get_page_content()}
+    def screenshot(self, save_path: Optional[Path] = None, full_page: bool = True) -> bytes:
+        img = self.client.get_screenshot()
+        if save_path:
+            save_path.write_bytes(img)
+        return img
+    def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
+        if selector:
+            eid = self.client.find_element("accessibility id", selector)
+            self.client.click_element(eid)
+        elif position:
+            self.client.mouse_move(int(position[0]), int(position[1]))
+            self.client.mouse_click()
+    def input(self, text: str, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, clear_before: bool = True, **kwargs) -> None:
+        if selector:
+            eid = self.client.find_element("accessibility id", selector)
+            if clear_before: self.client.clear_element(eid)
+            self.client.send_keys_to_element(eid, text)
+        else:
+            if position: self.client.mouse_move(int(position[0]), int(position[1]))
+            self.client.send_keys(text)
+    def scroll(self, direction: str = "down", distance: Optional[int] = None, **kwargs) -> None: pass
+    def wait_for_selector(self, selector: str, timeout: Optional[int] = None, **kwargs) -> bool: return True
+    def evaluate_script(self, script: str, *args) -> Any: return None
+
+# ==================== AI SDK 实例管理 ====================
+from sdk.pymidscene import PyMidscene
+
+_midscene: Optional[PyMidscene] = None
+
+def get_midscene() -> PyMidscene:
+    """获取本地 AI SDK 实例"""
+    global _midscene
+    if _midscene is None:
+        client = get_client()
+        local_device = LocalWinAppDevice(client)
+        # 初始化 SDK，使用 manual 模式并手动注入本地设备
+        _midscene = PyMidscene(device_provider="manual", use_agent=True)
+        _midscene.browser = local_device
+        _midscene.device = local_device
+        _midscene._launched = True # 标记已启动
+    return _midscene
 
 # 配置日志
 logger.remove()
@@ -110,6 +170,92 @@ def winapp_get_status() -> str:
         return _handle_error(e, "获取服务状态")
 
 
+# ==================== 交互工具 ====================
+
+@mcp.tool(description="在当前窗口截图")
+def winapp_screenshot() -> str:
+    """获取当前窗口截图，返回 base64 字符串"""
+    try:
+        client = get_client()
+        img_bytes = client.get_screenshot()
+        return base64.b64encode(img_bytes).decode()
+    except Exception as e:
+        return _handle_error(e, "截图")
+
+
+@mcp.tool(description="获取当前窗口的 XML 源码")
+def winapp_get_source() -> str:
+    """获取当前页面源码 (XML)"""
+    try:
+        client = get_client()
+        return client.get_page_source()
+    except Exception as e:
+        return _handle_error(e, "获取源码")
+
+
+@mcp.tool(description="点击指定选择器的元素")
+def winapp_click_element(selector: str, using: str = "accessibility id") -> str:
+    """点击元素
+    
+    Args:
+        selector: 元素选择器
+        using: 定位策略 (id, name, class name, xpath, accessibility id)
+    """
+    try:
+        client = get_client()
+        element_id = client.find_element(using, selector)
+        client.click_element(element_id)
+        return f"已点击元素: {selector}"
+    except Exception as e:
+        return _handle_error(e, f"点击元素 {selector}")
+
+
+@mcp.tool(description="点击指定坐标")
+def winapp_click(x: int, y: int) -> str:
+    """点击屏幕坐标"""
+    try:
+        client = get_client()
+        client.mouse_move(x, y)
+        client.mouse_click()
+        return f"已点击坐标: ({x}, {y})"
+    except Exception as e:
+        return _handle_error(e, f"点击坐标 ({x}, {y})")
+
+
+@mcp.tool(description="向指定选择器的元素发送文本")
+def winapp_send_keys(keys: str, selector: Optional[str] = None, using: str = "accessibility id") -> str:
+    """发送文本按键
+    
+    Args:
+        keys: 要发送的文本
+        selector: (可选) 目标元素选择器，若不提供则发送到当前焦点
+        using: 定位策略
+    """
+    try:
+        client = get_client()
+        if selector:
+            element_id = client.find_element(using, selector)
+            client.send_keys_to_element(element_id, keys)
+            return f"已向元素 {selector} 发送文本: {keys}"
+        else:
+            client.send_keys(keys)
+            return f"已发送全局文本: {keys}"
+    except Exception as e:
+        return _handle_error(e, f"发送文本 {keys}")
+
+
+@mcp.tool(description="清空指定选择器的元素内容")
+def winapp_clear_element(selector: str, using: str = "accessibility id") -> str:
+    """清空元素"""
+    try:
+        client = get_client()
+        element_id = client.find_element(using, selector)
+        client.clear_element(element_id)
+        return f"已清空元素: {selector}"
+    except Exception as e:
+        return _handle_error(e, f"清空元素 {selector}")
+
+
 @mcp.tool(description="设置会话超时时间")
 def winapp_set_timeout(timeout_type: str, ms: int) -> str:
     """设置超时时间"""
@@ -119,6 +265,61 @@ def winapp_set_timeout(timeout_type: str, ms: int) -> str:
         return f"超时已设置: {timeout_type} = {ms}ms"
     except Exception as e:
         return _handle_error(e, "设置超时")
+
+
+# ==================== AI 交互工具 (由 SDK 实现) ====================
+
+@mcp.tool(description="使用 AI 定位并点击元素")
+def winapp_ai_click(prompt: str) -> str:
+    """AI 点击
+    
+    Args:
+        prompt: 自然语言描述，如 '点击登录按钮'
+    """
+    try:
+        midscene = get_midscene()
+        midscene.ai_click(prompt)
+        return f"✅ AI 点击成功: {prompt}"
+    except Exception as e:
+        return _handle_error(e, f"AI 点击 {prompt}")
+
+
+@mcp.tool(description="使用 AI 定位并输入文本")
+def winapp_ai_input(prompt: str, text: str) -> str:
+    """AI 输入
+    
+    Args:
+        prompt: 目标元素的自然语言描述
+        text: 要输入的文本
+    """
+    try:
+        midscene = get_midscene()
+        midscene.ai_input(prompt, text)
+        return f"✅ AI 输入成功: 向 {prompt} 输入 {text}"
+    except Exception as e:
+        return _handle_error(e, f"AI 输入 {prompt}")
+
+
+@mcp.tool(description="使用 AI 提取页面信息")
+def winapp_ai_extract(prompt: str) -> str:
+    """AI 提取信息"""
+    try:
+        midscene = get_midscene()
+        result = midscene.ai_extract(prompt)
+        return f"✅ AI 提取成功: {json.dumps(result, ensure_ascii=False)}"
+    except Exception as e:
+        return _handle_error(e, f"AI 提取 {prompt}")
+
+
+@mcp.tool(description="使用 AI 进行页面断言")
+def winapp_ai_assert(prompt: str) -> str:
+    """AI 断言"""
+    try:
+        midscene = get_midscene()
+        midscene.ai_assert(prompt)
+        return f"✅ AI 断言成立: {prompt}"
+    except Exception as e:
+        return _handle_error(e, f"AI 断言 {prompt}")
 
 
 # ==================== 主入口 ====================

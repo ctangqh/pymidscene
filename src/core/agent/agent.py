@@ -69,7 +69,7 @@ class Agent:
     - Cache: flush_cache
     """
     
-    def __init__(self, device, opts: Optional[Union[AgentOpt, Dict]] = None, llm=None):
+    def __init__(self, device, opts: Optional[Union[AgentOpt, Dict]] = None, llm=None, vision_llm=None):
         """
         Initialize the Agent.
         
@@ -90,9 +90,11 @@ class Agent:
                 self.llm = get_llm()
             except MissingAPIKeyError:
                 self.llm = None
+
+        self.vision_llm = vision_llm or self.llm
         
         # Service for AI operations
-        self.service = Service(lambda: self.get_ui_context(), llm=self.llm)
+        self.service = Service(lambda: self.get_ui_context(), llm=self.vision_llm)
         
         # Report dump
         self.dump = self._reset_dump()
@@ -232,7 +234,7 @@ class Agent:
     
     async def _handle_visual_debug(self, execution_dump: Dict[str, Any]) -> None:
         """Handle visual debugging by saving annotated screenshots"""
-        from ..visualizer import annotate_screenshot
+        from ..visualizer import annotate_screenshot, format_box_label
         
         tasks = execution_dump.get("tasks", [])
         for task in tasks:
@@ -279,9 +281,7 @@ class Agent:
                                 
                             right, bottom = left + width, top + height
                             
-                            # Format label: Type, [left, top, right, bottom]
-                            # User requested: Button, [566,344,666,390]
-                            label = f"{el_type.capitalize()}, [{int(left)},{int(top)},{int(right)},{int(bottom)}]"
+                            label = format_box_label(rect, el_type)
                             
                             annotate_screenshot(
                                 context.screenshot,
@@ -981,6 +981,6 @@ class Agent:
         }
 
 
-def create_agent(device, opts: Optional[Union[AgentOpt, Dict]] = None, llm=None) -> Agent:
+def create_agent(device, opts: Optional[Union[AgentOpt, Dict]] = None, llm=None, vision_llm=None) -> Agent:
     """Factory function to create an Agent"""
-    return Agent(device, opts, llm=llm)
+    return Agent(device, opts, llm=llm, vision_llm=vision_llm)

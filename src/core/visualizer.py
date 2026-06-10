@@ -5,6 +5,44 @@ from PIL import Image, ImageDraw
 from pathlib import Path
 from .types import Rect
 
+
+def format_box_label(rect: Any, el_type: str = "element") -> str:
+    if isinstance(rect, Rect):
+        left, top, right, bottom = (
+            rect.left,
+            rect.top,
+            rect.left + rect.width,
+            rect.top + rect.height,
+        )
+    elif isinstance(rect, dict):
+        if "left" in rect and "top" in rect and "width" in rect and "height" in rect:
+            left, top, right, bottom = (
+                rect["left"],
+                rect["top"],
+                rect["left"] + rect["width"],
+                rect["top"] + rect["height"],
+            )
+        elif "x" in rect and "y" in rect and "width" in rect and "height" in rect:
+            left, top, right, bottom = (
+                rect["x"],
+                rect["y"],
+                rect["x"] + rect["width"],
+                rect["y"] + rect["height"],
+            )
+        elif "left" in rect and "top" in rect and "right" in rect and "bottom" in rect:
+            left, top, right, bottom = (
+                rect["left"],
+                rect["top"],
+                rect["right"],
+                rect["bottom"],
+            )
+        else:
+            left = top = right = bottom = 0
+    else:
+        left = top = right = bottom = 0
+
+    return f"{(el_type or 'element').capitalize()}, [{int(left)},{int(top)},{int(right)},{int(bottom)}]"
+
 def annotate_screenshot(
     screenshot_base64: str,
     annotations: List[Dict[str, Any]],
@@ -44,6 +82,8 @@ def annotate_screenshot(
                 
             color = ann.get("color") or colors[i % len(colors)]
             label = ann.get("label", "")
+            if not label and ann.get("el_type"):
+                label = format_box_label(rect, str(ann.get("el_type") or "element"))
             
             # Draw rectangle
             draw.rectangle(box, outline=color, width=3)

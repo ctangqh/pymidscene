@@ -9,9 +9,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from sdk.pymidscene import create_client
 
 def mcp_search_midscene():
-    # 1. 创建MCP设备客户端，自动加载.env中的MCP_SERVER_URL配置
+    # 1. 创建MCP设备客户端，自动加载 Settings 中的 MCP 配置
     with create_client(
-        device_type="mcp_playwright",  # 指定使用MCP Playwright设备
+        device_provider="mcp_playwright",  # 指定使用MCP Playwright设备
         device_options={
             # 也可以在这里手动指定MCP配置，会覆盖.env中的配置
             # "mcp_server_url": "http://192.168.10.66:55002/mcp",

@@ -52,8 +52,10 @@ async def common_context_parser(device, opt: dict = None) -> UIContext:
     opt = opt or {}
     user_shrink_factor = opt.get("screenshot_shrink_factor", 1.0)
     
-    # Get logical size
+    # Get logical size. For non-web devices, screenshot pixels are the most
+    # reliable coordinate system, so we treat them as logical coordinates.
     logical_width, logical_height = device.size()
+    interface_type = getattr(device, "interface_type", "")
     
     # Take screenshot
     screenshot_b64 = device.screenshot_base64()
@@ -69,8 +71,12 @@ async def common_context_parser(device, opt: dict = None) -> UIContext:
     
     final_logical_width = logical_width
     final_logical_height = logical_height
+
+    if interface_type not in ("web", "browser"):
+        final_logical_width = img_width
+        final_logical_height = img_height
     
-    if logical_is_portrait != screenshot_is_portrait:
+    if interface_type in ("web", "browser") and logical_is_portrait != screenshot_is_portrait:
         logger.debug(f"Orientation mismatch: logical {logical_width}x{logical_height} vs screenshot {img_width}x{img_height}. Swapping logical dimensions.")
         final_logical_width = logical_height
         final_logical_height = logical_width

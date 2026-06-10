@@ -36,7 +36,7 @@ uv run playwright install chromium --with-deps
 复制环境变量模板，填入你的 API 密钥：
 ```bash
 cp deploy/.env.example .env
-# 编辑 .env 文件，填入 OPENAI_API_KEY 或者 DOUBAN_API_KEY 等配置
+# 编辑 .env 文件，填入 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 等配置
 ```
 
 ### 基础使用（本地浏览器模式）

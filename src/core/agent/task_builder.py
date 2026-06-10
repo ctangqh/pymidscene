@@ -315,6 +315,10 @@ class TaskBuilder:
                     element = value
                     break
             position = element.center if element else None
+            ui_context = task_context.get("ui_context")
+            ratio = getattr(ui_context, "shrunk_shot_to_logical_ratio", 1.0) if ui_context else 1.0
+            if position and ratio and ratio != 1.0:
+                position = (position[0] / ratio, position[1] / ratio)
             if action_type == "Finished":
                 return {"output": param}
             if action_type == "Sleep":

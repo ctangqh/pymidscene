@@ -5,13 +5,14 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import Mock, MagicMock
+from unittest.mock import AsyncMock
 from pymidscene.core.locator import ElementLocator, LocateResult
-from pymidscene.browser.playwright_impl import PlaywrightBrowser
+from pymidscene.device.browser.playwright_impl import PlaywrightDevice
 
 
 def test_simplify_dom():
     """测试DOM简化功能"""
-    mock_browser = Mock(spec=PlaywrightBrowser)
+    mock_browser = Mock(spec=PlaywrightDevice)
     mock_llm = Mock()
     
     locator = ElementLocator(mock_browser, mock_llm)
@@ -58,7 +59,7 @@ def test_simplify_dom():
 
 def test_locate_flow():
     """测试定位流程"""
-    mock_browser = Mock(spec=PlaywrightBrowser)
+    mock_browser = Mock(spec=PlaywrightDevice)
     mock_llm = Mock()
     
     # 模拟返回定位结果
@@ -104,7 +105,7 @@ def test_locate_flow():
 
 def test_extract_info():
     """测试信息提取功能"""
-    mock_browser = Mock(spec=PlaywrightBrowser)
+    mock_browser = Mock(spec=PlaywrightDevice)
     mock_llm = Mock()
     
     # 模拟返回提取结果
@@ -126,11 +127,18 @@ def test_extract_info():
     """
     
     locator = ElementLocator(mock_browser, mock_llm)
+    mock_browser.size.return_value = (1920, 1080)
+    mock_browser.screenshot_base64.return_value = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6X6K6kAAAAASUVORK5CYII="
+    locator.service.extract = AsyncMock(return_value={
+        "data": [{"title": "PyMidscene 介绍", "url": "https://xxx.com"}],
+        "thought": "从搜索结果中提取到第一条标题和链接",
+        "usage": None,
+    })
     
     result = locator.extract_info("提取第一条搜索结果的标题和链接")
     print(f"✅ 提取成功，结果: {result}")
     assert result["data"][0]["title"] == "PyMidscene 介绍"
-    assert result["confidence"] == 0.9
+    assert result["confidence"] == 1.0
     print("✅ 信息提取功能测试通过")
 
 

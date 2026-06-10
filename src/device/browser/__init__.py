@@ -1,2 +1,3 @@
-from .playwright_impl import PlaywrightBrowser
-__all__ = ["PlaywrightBrowser"]
+from .playwright_impl import PlaywrightDevice, PlaywrightBrowser
+
+__all__ = ["PlaywrightDevice", "PlaywrightBrowser"]

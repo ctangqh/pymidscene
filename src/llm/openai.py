@@ -10,12 +10,14 @@ class OpenAILLM(BaseLLM):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.api_key = self.api_key or settings.OPENAI_API_KEY
+        llm_config = settings.llm_config
+
+        self.api_key = self.api_key or llm_config.api_key
         if not self.api_key:
-            raise MissingAPIKeyError("OPENAI_API_KEY 未配置")
+            raise MissingAPIKeyError("LLM_API_KEY / OPENAI_API_KEY 未配置")
         
-        self.base_url = self.base_url or settings.OPENAI_BASE_URL
-        self.model = self.model or settings.OPENAI_MODEL
+        self.base_url = self.base_url or llm_config.base_url
+        self.model = self.model or llm_config.model
         
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
     

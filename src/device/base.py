@@ -10,11 +10,11 @@ if TYPE_CHECKING:
 
 class BaseDevice(ABC):
     def __init__(self, **kwargs):
-        self.headless = kwargs.get("headless", settings.BROWSER_HEADLESS)
-        self.viewport_width = kwargs.get("viewport_width", settings.BROWSER_VIEWPORT_WIDTH)
-        self.viewport_height = kwargs.get("viewport_height", settings.BROWSER_VIEWPORT_HEIGHT)
-        self.user_agent = kwargs.get("user_agent", settings.BROWSER_USER_AGENT)
-        self.timeout = kwargs.get("timeout", settings.BROWSER_TIMEOUT)
+        self.headless = kwargs.get("headless", settings.DEVICE_HEADLESS)
+        self.viewport_width = kwargs.get("viewport_width", settings.DEVICE_VIEWPORT_WIDTH)
+        self.viewport_height = kwargs.get("viewport_height", settings.DEVICE_VIEWPORT_HEIGHT)
+        self.user_agent = kwargs.get("user_agent", settings.DEVICE_USER_AGENT)
+        self.timeout = kwargs.get("timeout", settings.DEVICE_TIMEOUT)
         self.current_url = ""
         
     @property
@@ -114,4 +114,6 @@ class BaseDevice(ABC):
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+
 BaseBrowser = BaseDevice

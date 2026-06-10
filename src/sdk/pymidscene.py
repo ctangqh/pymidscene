@@ -1,6 +1,6 @@
 import asyncio
 from typing import Optional, Dict, Any, List
-from device import get_browser, BaseBrowser
+from device import get_device, BaseDevice
 from llm import get_llm
 from core.locator import ElementLocator
 from core.agent.agent import Agent
@@ -22,22 +22,25 @@ class PyMidscene:
     
     def __init__(
         self,
-        browser_provider: Optional[str] = None,
+        device_provider: Optional[str] = None,
         llm_provider: Optional[str] = None,
         vision_provider: Optional[str] = None,
         **kwargs
     ):
-        self.browser: BaseBrowser = get_browser(browser_provider, **kwargs.get("browser_options", {}))
-        self.device = self.browser  # 别名，提高兼容性
-        self.llm = get_llm(llm_provider, **kwargs.get("llm_options", {}))
-        # 视觉模型（可选）
-        self.vision_model = None
-        if vision_provider:
-            # 后续实现视觉模型工厂后替换
-            pass
+        if device_provider is None:
+            device_provider = kwargs.pop("device_type", None)
+
+        device_options = kwargs.get("device_options", {})
+        llm_options = kwargs.get("llm_options", {})
+        vision_options = kwargs.get("vision_options", {})
+
+        self.device: BaseDevice = get_device(device_provider, **device_options)
+        self.browser = self.device  # 兼容旧代码的别名
+        self.llm = get_llm(llm_provider, **llm_options)
+        self.vision_model = self._init_vision_model(vision_provider, vision_options)
         
         # Legacy locator (still works for backward compat)
-        self.locator = ElementLocator(self.browser, self.llm, self.vision_model)
+        self.locator = ElementLocator(self.device, self.llm, self.vision_model)
         
         # New Agent-based architecture
         self._agent: Optional[Agent] = None
@@ -50,6 +53,29 @@ class PyMidscene:
         
         # 统一的事件循环管理
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _init_vision_model(self, vision_provider: Optional[str], vision_options: Optional[Dict[str, Any]] = None):
+        if not settings.LOCATE_USE_VISION:
+            return None
+
+        vision_config = settings.vision_config
+        provider = vision_provider or vision_config.provider
+        options = dict(vision_options or {})
+
+        # 默认复用视觉配置；若视觉未单独配置，则会自动继承 llm_config。
+        options.setdefault("model", vision_config.model)
+        options.setdefault("base_url", vision_config.base_url)
+        options.setdefault("api_key", vision_config.api_key)
+        options.setdefault("timeout", vision_config.timeout)
+        options.setdefault("max_retries", vision_config.max_retries)
+
+        try:
+            return get_llm(provider, **options)
+        except Exception as e:
+            if vision_provider or vision_options:
+                raise
+            logger.warning(f"初始化视觉模型失败，回退到通用 LLM: {e}")
+            return self.llm
     
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None or self._loop.is_closed():
@@ -84,19 +110,24 @@ class PyMidscene:
         if not self._use_agent:
             raise RuntimeError("Agent is disabled, set use_agent=True in constructor to enable")
         if self._agent is None:
-            self._agent = Agent(self.browser, opts=self._agent_options, llm=self.llm)
+            self._agent = Agent(
+                self.device,
+                opts=self._agent_options,
+                llm=self.llm,
+                vision_llm=self.vision_model or self.llm,
+            )
         return self._agent
     
     def launch(self) -> None:
-        """启动浏览器"""
+        """启动设备"""
         if not self._launched:
-            self.browser.launch()
+            self.device.launch()
             self._launched = True
     
     def close(self) -> None:
-        """关闭浏览器"""
+        """关闭设备"""
         if self._launched:
-            self.browser.close()
+            self.device.close()
             self._launched = False
             if self._loop and not self._loop.is_running():
                 self._loop.close()
@@ -105,7 +136,7 @@ class PyMidscene:
         """跳转到指定 URL"""
         if not self._launched:
             self.launch()
-        self.browser.goto(url, **kwargs)
+        self.device.goto(url, **kwargs)
     
     def click(self, element_description: str, **kwargs) -> None:
         """
@@ -113,7 +144,7 @@ class PyMidscene:
         """
         logger.info(f"点击元素: {element_description}")
         position = self.locator.locate(element_description, **kwargs)
-        self.browser.click(position=position)
+        self.device.click(position=position)
     
     def input(self, element_description: str, text: str, **kwargs) -> None:
         """
@@ -121,7 +152,15 @@ class PyMidscene:
         """
         logger.info(f"向 {element_description} 输入文本: {text}")
         position = self.locator.locate(element_description, **kwargs)
-        self.browser.input(text, position=position)
+        interface_type = getattr(self.device, "interface_type", "")
+        selector = getattr(self.locator.last_result, "selector", None)
+        if interface_type not in ("web", "browser") and selector:
+            self.device.input(text, selector=selector, position=position)
+            return
+        if interface_type not in ("web", "browser") and position:
+            # Native clients often need an explicit focus step before text input.
+            self.device.click(position=position)
+        self.device.input(text, position=position)
     
     def extract(self, extract_description: str, **kwargs) -> Dict[str, Any]:
         """
@@ -148,7 +187,7 @@ class PyMidscene:
         """截图"""
         from pathlib import Path
         path_obj: Optional[Path] = Path(save_path) if save_path is not None else None
-        return self.browser.screenshot(path_obj, **kwargs)
+        return self.device.screenshot(path_obj, **kwargs)
     
     # === New Agent-based methods ===
     
