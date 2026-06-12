@@ -39,6 +39,9 @@ class PyMidscene:
         self.debug = debug
         if self.debug:
             settings.DEBUG = True
+            # 重新配置 logger，开启 DEBUG 级别并输出到文件
+            from common.logger import setup_logger
+            setup_logger(debug=True)
             logger.info("PyMidscene 调试模式已启用")
         
         # Legacy locator (we'll remove this later, but keep it just in case)
@@ -341,6 +344,13 @@ def create_client(
 ) -> PyMidscene:
     """创建 PyMidscene 客户端"""
     try:
+        # 如果开启了 debug，先配置好 logger
+        if debug:
+            from common.logger import setup_logger
+            from common.config import settings
+            settings.DEBUG = True
+            setup_logger(debug=True)
+        
         return PyMidscene(
             device_provider=device_provider,
             llm_provider=llm_provider,

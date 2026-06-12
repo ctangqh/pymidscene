@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     REPORT_SAVE_DIR: str = "./output/reports"
     REPORT_SCREENSHOT_SAVE_DIR: str = "./output/reports/screenshots"
     REPORT_AUTO_SAVE: bool = True
+    
+    # 日志配置
+    LOG_FILE: str = "./logs/run.log"
+    LOG_FILE_DEBUG: str = "./logs/run_debug.log"
 
     # MCP 配置
     DEFAULT_MCP_NAME: str = Field(

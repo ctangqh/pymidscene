@@ -5,9 +5,24 @@ from pathlib import Path
 from .config import settings
 
 
-def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None) -> None:
+def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None, debug: Optional[bool] = None) -> None:
     """初始化日志系统"""
-    log_level = (log_level or settings.LOG_LEVEL).upper()
+    # 如果没有明确指定，根据 settings.DEBUG 确定日志级别
+    if debug is None:
+        debug = settings.DEBUG
+    
+    # Debug 模式时默认用 DEBUG 级别，否则用配置的级别
+    if debug and not log_level:
+        log_level = "DEBUG"
+    else:
+        log_level = (log_level or settings.LOG_LEVEL).upper()
+    
+    # 默认使用配置的日志文件路径，debug 模式用不同的文件
+    if log_file is None:
+        if debug and hasattr(settings, 'LOG_FILE_DEBUG'):
+            log_file = settings.LOG_FILE_DEBUG
+        elif hasattr(settings, 'LOG_FILE'):
+            log_file = settings.LOG_FILE
     
     # 移除默认 handler
     logger.remove()
@@ -33,8 +48,9 @@ def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None
             compression="zip",
             enqueue=True,
         )
+        logger.info(f"Log file: {log_path}")
     
-    logger.info(f"Logger initialized, level: {log_level}")
+    logger.info(f"Logger initialized, level: {log_level}, debug: {debug}")
 
 
 # 初始化默认日志

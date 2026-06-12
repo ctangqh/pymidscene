@@ -38,3 +38,6 @@ bin/
 
 # Local design docs
 design/
+
+# logs
+logs/
