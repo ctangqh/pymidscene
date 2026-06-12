@@ -406,6 +406,10 @@ class McpWinAppDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "windows"
+    
+    def action_space(self) -> List[Any]:
+        from core.agent.action_space import WEB_ACTION_SPACE
+        return list(WEB_ACTION_SPACE)
 
 
 class McpHypiumDevice(BaseMcpDevice):
@@ -433,6 +437,10 @@ class McpHypiumDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "hypium"
+    
+    def action_space(self) -> List[Any]:
+        from core.agent.action_space import WEB_ACTION_SPACE
+        return list(WEB_ACTION_SPACE)
 
 
 class McpAndroidDevice(BaseMcpDevice):
@@ -460,6 +468,10 @@ class McpAndroidDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "android"
+    
+    def action_space(self) -> List[Any]:
+        from core.agent.action_space import WEB_ACTION_SPACE
+        return list(WEB_ACTION_SPACE)
 
 
 class McpIosDevice(BaseMcpDevice):
@@ -487,3 +499,7 @@ class McpIosDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "ios"
+    
+    def action_space(self) -> List[Any]:
+        from core.agent.action_space import WEB_ACTION_SPACE
+        return list(WEB_ACTION_SPACE)

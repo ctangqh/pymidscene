@@ -234,7 +234,7 @@ class Agent:
     
     async def _handle_visual_debug(self, execution_dump: Dict[str, Any]) -> None:
         """Handle visual debugging by saving annotated screenshots"""
-        from ..visualizer import annotate_screenshot, format_box_label
+        from common.image import annotate_screenshot, format_box_label, get_screenshot_save_dir
         
         tasks = execution_dump.get("tasks", [])
         for task in tasks:
@@ -262,10 +262,10 @@ class Agent:
                         # Get current UI context for screenshot
                         context = await self.get_ui_context()
                         if context and context.screenshot:
-                            debug_dir = Path("./output/visual_debug")
-                            debug_dir.mkdir(parents=True, exist_ok=True)
+                            debug_dir = get_screenshot_save_dir()
                             
-                            filename = f"debug_{task_id}_{int(time.time())}.png"
+                            # 文件名添加 _debug 后缀
+                            filename = f"debug_{task_id}_{int(time.time())}_debug.png"
                             output_path = debug_dir / filename
                             
                             # Format label with more info: Type and Coordinates

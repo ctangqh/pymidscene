@@ -138,7 +138,7 @@ class Settings(BaseSettings):
 
     # 报告配置
     REPORT_SAVE_DIR: str = "./output/reports"
-    REPORT_SCREENSHOT_SAVE_DIR: str = "./output/screenshots"
+    REPORT_SCREENSHOT_SAVE_DIR: str = "./output/reports/screenshots"
     REPORT_AUTO_SAVE: bool = True
 
     # MCP 配置

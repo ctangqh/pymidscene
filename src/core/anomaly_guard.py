@@ -1,7 +1,5 @@
-import base64
 import json
 import time
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
@@ -10,7 +8,6 @@ from common.exceptions import ActionExecutionError, SystemDialogDetectedError
 from common.json_utils import parse_relaxed_json_object
 from common.logger import logger
 from llm import MessageBuilder
-from .visualizer import annotate_screenshot, format_box_label
 
 
 def _center_from_ltrb(bbox: Dict[str, Any]) -> Optional[Tuple[float, float]]:
@@ -339,14 +336,19 @@ class UIAnomalyGuard:
         if not settings.DEBUG or not screenshot_b64:
             return
         try:
-            out_dir = Path(settings.ANOMALY_DEBUG_SAVE_DIR)
-            out_dir.mkdir(parents=True, exist_ok=True)
+            from common.image import get_screenshot_save_dir, save_raw_screenshot, annotate_screenshot, format_box_label
+            
+            out_dir = get_screenshot_save_dir()
             ts = int(time.time() * 1000)
             prefix = f"{ts}_{_safe_name(action_name)}"
-            raw_path = out_dir / f"{prefix}_raw.png"
-            ann_path = out_dir / f"{prefix}_annotated.png"
-            json_path = out_dir / f"{prefix}_analysis.json"
-            raw_path.write_bytes(base64.b64decode(screenshot_b64))
+            
+            # 使用新的抽象方法保存原始截图
+            raw_filename = f"{prefix}_raw_debug.png"
+            raw_path = save_raw_screenshot(screenshot_b64, raw_filename, is_debug=True)
+            
+            # 保存标注截图
+            ann_filename = f"{prefix}_annotated_debug.png"
+            ann_path = out_dir / ann_filename
 
             annotations: List[Dict[str, Any]] = []
             anomaly_bbox = detection.get("anomaly_bbox") or {}
@@ -394,10 +396,16 @@ class UIAnomalyGuard:
                     }
                 )
             annotate_screenshot(screenshot_b64, annotations, str(ann_path))
+            
+            # 保存分析 JSON
+            json_filename = f"{prefix}_analysis_debug.json"
+            json_path = out_dir / json_filename
             json_path.write_text(
                 json.dumps({"detection": detection, "decision": decision or {}}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            
+            logger.debug(f"anomaly debug save success: raw={raw_path}, annotated={ann_path}, json={json_path}")
         except Exception as e:
             logger.debug(f"anomaly debug save failed: {e}")
 

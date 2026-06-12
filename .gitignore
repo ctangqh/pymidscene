@@ -8,7 +8,6 @@ venv/
 
 # Environment
 .env
-.env.*
 
 # Midscene Outputs
 output/

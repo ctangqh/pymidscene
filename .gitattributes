@@ -1,0 +1,5 @@
+# 设置所有文本文件使用 LF
+* text=auto eol=lf
+
+# 或针对 Python 文件
+*.py text eol=lf

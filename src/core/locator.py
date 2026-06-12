@@ -106,21 +106,13 @@ class ElementLocator:
             bbox = dict(raw_bbox)
 
         try:
-            from .visualizer import annotate_screenshot, format_box_label
+            from common.image import save_debug_screenshot, format_box_label
 
             screenshot_b64 = self.device.screenshot_base64()
             if not screenshot_b64:
                 return
 
-            debug_dir = Path(settings.REPORT_SCREENSHOT_SAVE_DIR).parent / "visual_debug"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-
             safe_name = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", element_description).strip("_") or "element"
-            timestamp = int(time.time() * 1000)
-            raw_path = debug_dir / f"{timestamp}_{safe_name}_raw.png"
-            annotated_path = debug_dir / f"{timestamp}_{safe_name}_annotated.png"
-
-            raw_path.write_bytes(base64.b64decode(screenshot_b64))
 
             el_type = "element"
             reason = result.reason or ""
@@ -128,12 +120,15 @@ class ElementLocator:
             if m:
                 el_type = m.group(1)
             label = format_box_label(bbox, el_type)
-            annotate_screenshot(
+
+            # 使用新的抽象方法保存调试截图
+            paths = save_debug_screenshot(
                 screenshot_b64,
-                [{"rect": bbox, "label": label}],
-                str(annotated_path),
+                safe_name,
+                annotations=[{"rect": bbox, "label": label}],
+                save_raw=True
             )
-            logger.debug(f"定位调试截图已保存: raw={raw_path}, annotated={annotated_path}")
+            logger.debug(f"定位调试截图已保存: raw={paths.get('raw')}, annotated={paths.get('annotated')}")
         except Exception as e:
             logger.warning(f"保存定位调试截图失败: {e}")
     
