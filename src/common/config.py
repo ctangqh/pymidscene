@@ -186,6 +186,7 @@ class Settings(BaseSettings):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._load_mcp_servers_from_yaml()
+        self._normalize_report_paths()
 
     def _load_mcp_servers_from_yaml(self):
         """尝试从 deploy/mcp_servers.yaml 加载配置"""
@@ -199,6 +200,22 @@ class Settings(BaseSettings):
                             self.MCP_SERVERS[name] = McpServerConfig(**config)
             except Exception as e:
                 print(f"Warning: Failed to load MCP servers from {yaml_path}: {e}")
+
+    def _normalize_report_paths(self):
+        """兼容旧配置，保证截图目录始终跟随 report 目录"""
+        report_dir = os.path.normpath(self.REPORT_SAVE_DIR or "./output/reports")
+        current_screenshot_dir = os.path.normpath(
+            self.REPORT_SCREENSHOT_SAVE_DIR or os.path.join(report_dir, "screenshots")
+        )
+        legacy_dirs = {
+            os.path.normpath("./output/screenshots"),
+            os.path.normpath("output/screenshots"),
+            os.path.normpath(".\\output\\screenshots"),
+            os.path.normpath("output\\screenshots"),
+        }
+
+        if current_screenshot_dir in legacy_dirs:
+            self.REPORT_SCREENSHOT_SAVE_DIR = os.path.join(report_dir, "screenshots")
 
     @property
     def llm_config(self) -> OpenAICompatibleModelConfig:

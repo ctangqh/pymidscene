@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from common.logger import logger
 
-from ..models import UIElement
+from ..models import ElementRef, UIElement
 from ..normalize import extract_bounds
 from .base import BaseUITreeAdapter
 
@@ -69,17 +69,30 @@ class WindowsUITreeAdapter(BaseUITreeAdapter):
     def _parse_xml_element(self, elem: ET.Element, path: List[str], depth: int) -> UIElement:
         attrs = dict(elem.attrib)
         name = (attrs.get("Name") or attrs.get("name") or attrs.get("label") or attrs.get("text") or "").strip()
+        automation_id = attrs.get("AutomationId") or attrs.get("automationId") or attrs.get("resource-id") or attrs.get("id") or ""
+        class_name = attrs.get("ClassName") or attrs.get("class") or attrs.get("className") or ""
+        locator_candidates = self._build_locator_candidates(
+            name=name,
+            automation_id=automation_id,
+            class_name=class_name,
+            control_type=attrs.get("LocalizedControlType") or attrs.get("controlType") or attrs.get("role") or elem.tag,
+        )
+        element_ref = locator_candidates[0] if locator_candidates else None
 
         element = UIElement(
+            platform="windows",
             name=name,
             tag=elem.tag,
             control_type=attrs.get("LocalizedControlType") or attrs.get("controlType") or attrs.get("role") or elem.tag,
-            automation_id=attrs.get("AutomationId") or attrs.get("automationId") or attrs.get("resource-id") or attrs.get("id") or "",
-            class_name=attrs.get("ClassName") or attrs.get("class") or attrs.get("className") or "",
+            automation_id=automation_id,
+            class_name=class_name,
             bounds=extract_bounds(attrs),
             path=path.copy(),
             depth=depth,
             attributes=attrs,
+            element_ref=element_ref,
+            locator_candidates=locator_candidates,
+            action_capabilities=self._build_action_capabilities(attrs, elem.tag),
         )
 
         if name:
@@ -94,17 +107,31 @@ class WindowsUITreeAdapter(BaseUITreeAdapter):
     def _parse_dict_element(self, data: Dict[str, Any], path: List[str], depth: int) -> UIElement:
         attrs = dict(data)
         name = (attrs.get("Name") or attrs.get("name") or attrs.get("label") or attrs.get("text") or "").strip()
+        automation_id = attrs.get("AutomationId") or attrs.get("resource-id") or attrs.get("id") or ""
+        class_name = attrs.get("ClassName") or attrs.get("class") or attrs.get("className") or ""
+        control_type = attrs.get("LocalizedControlType") or attrs.get("controlType") or attrs.get("role") or ""
+        locator_candidates = self._build_locator_candidates(
+            name=name,
+            automation_id=automation_id,
+            class_name=class_name,
+            control_type=control_type,
+        )
+        element_ref = locator_candidates[0] if locator_candidates else None
 
         element = UIElement(
+            platform="windows",
             name=name,
             tag=attrs.get("tag") or attrs.get("tagName") or attrs.get("type") or attrs.get("role") or "node",
-            control_type=attrs.get("LocalizedControlType") or attrs.get("controlType") or attrs.get("role") or "",
-            automation_id=attrs.get("AutomationId") or attrs.get("resource-id") or attrs.get("id") or "",
-            class_name=attrs.get("ClassName") or attrs.get("class") or attrs.get("className") or "",
+            control_type=control_type,
+            automation_id=automation_id,
+            class_name=class_name,
             bounds=extract_bounds(attrs),
             path=path.copy(),
             depth=depth,
             attributes=attrs,
+            element_ref=element_ref,
+            locator_candidates=locator_candidates,
+            action_capabilities=self._build_action_capabilities(attrs, control_type),
         )
 
         if name:
@@ -119,3 +146,58 @@ class WindowsUITreeAdapter(BaseUITreeAdapter):
                         element.children.append(child)
 
         return element
+
+    @staticmethod
+    def _append_candidate(
+        candidates: List[ElementRef],
+        selector_type: str,
+        selector_value: str,
+        **extra: Any,
+    ) -> None:
+        value = str(selector_value or "").strip()
+        if not value:
+            return
+        if any(item.selector_type == selector_type and item.selector_value == value for item in candidates):
+            return
+        candidates.append(
+            ElementRef(
+                platform="windows",
+                selector_type=selector_type,
+                selector_value=value,
+                extra=extra,
+            )
+        )
+
+    def _build_locator_candidates(
+        self,
+        *,
+        name: str,
+        automation_id: str,
+        class_name: str,
+        control_type: str,
+    ) -> List[ElementRef]:
+        candidates: List[ElementRef] = []
+        self._append_candidate(candidates, "accessibility id", automation_id)
+        self._append_candidate(candidates, "name", name)
+        if name and control_type:
+            xpath = f"//*[@Name='{name}' and contains(@LocalizedControlType, '{control_type}')]"
+            self._append_candidate(candidates, "xpath", xpath)
+        elif name:
+            self._append_candidate(candidates, "xpath", f"//*[@Name='{name}']")
+        if class_name and name:
+            xpath = f"//*[@ClassName='{class_name}' and @Name='{name}']"
+            self._append_candidate(candidates, "xpath", xpath)
+        return candidates
+
+    @staticmethod
+    def _build_action_capabilities(attrs: Dict[str, Any], tag_or_type: str) -> Dict[str, bool]:
+        searchable = " ".join(
+            str(value).lower()
+            for value in [tag_or_type, attrs.get("LocalizedControlType"), attrs.get("controlType"), attrs.get("IsEnabled")]
+            if value is not None
+        )
+        input_like = any(keyword in searchable for keyword in ["edit", "textbox", "text box", "输入", "编辑"])
+        return {
+            "click": True,
+            "input": input_like,
+        }

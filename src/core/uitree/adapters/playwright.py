@@ -3,7 +3,7 @@ Playwright / Browser UI Tree 适配器
 """
 from typing import Any, Dict, List, Optional
 
-from ..models import UIElement
+from ..models import ElementRef, UIElement
 from ..normalize import extract_bounds
 from .base import BaseUITreeAdapter
 
@@ -35,7 +35,15 @@ class PlaywrightUITreeAdapter(BaseUITreeAdapter):
         if not name:
             name = attrs.get("id", "")
 
+        locator_candidates = self._build_locator_candidates(
+            name=name,
+            tag=str(attrs.get("tagName") or attrs.get("tag") or attrs.get("type") or "node"),
+            attrs=attrs,
+        )
+        element_ref = locator_candidates[0] if locator_candidates else None
+
         element = UIElement(
+            platform="playwright",
             name=name,
             tag=attrs.get("tagName") or attrs.get("tag") or attrs.get("type") or "node",
             control_type=attrs.get("role") or attrs.get("type") or "element",
@@ -45,6 +53,9 @@ class PlaywrightUITreeAdapter(BaseUITreeAdapter):
             path=path.copy(),
             depth=depth,
             attributes=attrs,
+            element_ref=element_ref,
+            locator_candidates=locator_candidates,
+            action_capabilities=self._build_action_capabilities(attrs),
         )
 
         if name:
@@ -58,3 +69,56 @@ class PlaywrightUITreeAdapter(BaseUITreeAdapter):
                     element.children.append(child)
 
         return element
+
+    @staticmethod
+    def _append_candidate(
+        candidates: List[ElementRef],
+        selector_type: str,
+        selector_value: str,
+        **extra: Any,
+    ) -> None:
+        value = str(selector_value or "").strip()
+        if not value:
+            return
+        if any(item.selector_type == selector_type and item.selector_value == value for item in candidates):
+            return
+        candidates.append(
+            ElementRef(
+                platform="playwright",
+                selector_type=selector_type,
+                selector_value=value,
+                extra=extra,
+            )
+        )
+
+    def _build_locator_candidates(self, *, name: str, tag: str, attrs: Dict[str, Any]) -> List[ElementRef]:
+        candidates: List[ElementRef] = []
+        self._append_candidate(candidates, "playwright-ref", attrs.get("ref"))
+        self._append_candidate(candidates, "selector", attrs.get("selector"))
+        element_id = attrs.get("id")
+        if element_id:
+            self._append_candidate(candidates, "css", f"#{element_id}")
+        test_id = attrs.get("data-testid") or attrs.get("testid")
+        if test_id:
+            self._append_candidate(candidates, "css", f'[data-testid="{test_id}"]')
+        aria_label = attrs.get("aria-label")
+        if aria_label:
+            self._append_candidate(candidates, "css", f'[aria-label="{aria_label}"]')
+        role = attrs.get("role")
+        if role and name:
+            self._append_candidate(candidates, "role", f"{role}:{name}", role=role, name=name)
+        if tag and name:
+            self._append_candidate(candidates, "text", f"text={name}", tag=tag)
+        return candidates
+
+    @staticmethod
+    def _build_action_capabilities(attrs: Dict[str, Any]) -> Dict[str, bool]:
+        searchable = " ".join(
+            str(value).lower()
+            for value in [attrs.get("role"), attrs.get("type"), attrs.get("tagName"), attrs.get("tag")]
+            if value is not None
+        )
+        return {
+            "click": True,
+            "input": any(keyword in searchable for keyword in ["input", "textarea", "textbox", "searchbox"]),
+        }

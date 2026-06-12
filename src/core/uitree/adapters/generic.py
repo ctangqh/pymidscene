@@ -3,7 +3,7 @@
 """
 from typing import Any, Dict, List, Optional
 
-from ..models import UIElement
+from ..models import ElementRef, UIElement
 from ..normalize import extract_bounds
 from .base import BaseUITreeAdapter
 
@@ -30,7 +30,11 @@ class GenericUITreeAdapter(BaseUITreeAdapter):
                 if name:
                     break
 
+        locator_candidates = self._build_locator_candidates(name=name, attrs=attrs)
+        element_ref = locator_candidates[0] if locator_candidates else None
+
         element = UIElement(
+            platform="generic",
             name=name,
             tag=attrs.get("tag") or attrs.get("tagName") or attrs.get("type") or attrs.get("class") or "node",
             control_type=attrs.get("role") or attrs.get("type") or "",
@@ -40,6 +44,9 @@ class GenericUITreeAdapter(BaseUITreeAdapter):
             path=path.copy(),
             depth=depth,
             attributes=attrs,
+            element_ref=element_ref,
+            locator_candidates=locator_candidates,
+            action_capabilities={"click": True, "input": False},
         )
 
         if name:
@@ -54,3 +61,22 @@ class GenericUITreeAdapter(BaseUITreeAdapter):
                         element.children.append(child)
 
         return element
+
+    @staticmethod
+    def _append_candidate(candidates: List[ElementRef], selector_type: str, selector_value: str) -> None:
+        value = str(selector_value or "").strip()
+        if not value:
+            return
+        if any(item.selector_type == selector_type and item.selector_value == value for item in candidates):
+            return
+        candidates.append(ElementRef(platform="generic", selector_type=selector_type, selector_value=value))
+
+    def _build_locator_candidates(self, *, name: str, attrs: Dict[str, Any]) -> List[ElementRef]:
+        candidates: List[ElementRef] = []
+        for key in ["id", "identifier", "selector", "xpath", "name", "text", "label"]:
+            value = attrs.get(key)
+            if value:
+                self._append_candidate(candidates, key, value)
+        if name and not candidates:
+            self._append_candidate(candidates, "name", name)
+        return candidates

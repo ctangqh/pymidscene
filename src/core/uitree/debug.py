@@ -46,6 +46,7 @@ def capture_debug_tree(
             save_dir=save_dir,
             tree=parsed_tree,
             prefix=prefix,
+            device_type=resolved_device_type,
         )
 
         logger.info(

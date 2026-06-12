@@ -57,6 +57,12 @@ def report_html_template(title: str) -> str:
     .task[data-collapsed="true"] .task-body{{display:none;}}
     .error{{margin-top:8px;padding:10px 12px;background:#fff0ed;color:var(--fail);border-radius:10px;border:1px solid #ffd8cf;}}
     .kv{{margin-top:8px;font-size:12px;color:var(--muted);word-break:break-word;}}
+    .recovery{{margin-top:10px;padding:10px 12px;background:#f7f9fc;border:1px solid #e8edf5;border-radius:10px;}}
+    .recovery-title{{font-size:12px;font-weight:700;color:#324155;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}}
+    .recovery-item{{padding:8px 0;border-top:1px dashed #dde6f1;}}
+    .recovery-item:first-child{{border-top:none;padding-top:0;}}
+    .recovery-stage{{display:inline-flex;align-items:center;border-radius:999px;padding:2px 8px;background:#eef4ff;color:#2f5fbf;font-size:11px;font-weight:700;}}
+    .recovery-meta{{margin-top:6px;font-size:12px;color:var(--muted);line-height:1.5;word-break:break-word;}}
     .shot{{background:#fafcff;border:1px solid var(--line);border-radius:12px;padding:10px;}}
     .shot-btn{{display:block;width:100%;border:none;background:transparent;padding:0;cursor:zoom-in;}}
     .shot img{{max-width:100%;display:block;border-radius:10px;border:1px solid #e6ebf2;}}
@@ -147,6 +153,25 @@ def report_html_template(title: str) -> str:
       }}
       return count;
     }}
+    function renderActionRecovery(task) {{
+      const recovery = Array.isArray(task && task.log && task.log.action_recovery) ? task.log.action_recovery : [];
+      if (!recovery.length) return '';
+      let html = '<div class="recovery"><div class="recovery-title">Action Recovery</div>';
+      for (const item of recovery) {{
+        const selectorRef = item && item.selector_ref ? JSON.stringify(item.selector_ref) : '';
+        const position = item && item.position ? JSON.stringify(item.position) : '';
+        html += '<div class="recovery-item">';
+        html += '<div><span class="recovery-stage">' + esc(item && item.stage || 'unknown') + '</span></div>';
+        html += '<div class="recovery-meta">';
+        if (item && item.action_type) html += 'action: ' + esc(item.action_type) + '<br/>';
+        if (selectorRef) html += 'selector_ref: ' + esc(selectorRef) + '<br/>';
+        if (position) html += 'position: ' + esc(position) + '<br/>';
+        if (item && item.error) html += 'error: ' + esc(item.error);
+        html += '</div></div>';
+      }}
+      html += '</div>';
+      return html;
+    }}
     window.__pymidscene_render = function() {{
       const data = parseDumps();
       const root = document.getElementById('root');
@@ -201,6 +226,7 @@ def report_html_template(title: str) -> str:
           if (t.log && t.log.message) html += '<div class="small">' + esc(t.log.message) + '</div>';
           if (t.param) html += '<div class="kv">param: ' + esc(JSON.stringify(t.param)) + '</div>';
           if (t.log && t.log.anomaly) html += '<div class="kv">anomaly: ' + esc(JSON.stringify(t.log.anomaly)) + '</div>';
+          html += renderActionRecovery(t);
           if (t.error_message || t.error) html += '<div class="error">' + esc(t.error_message || t.error) + '</div>';
           html += '</div></div>';
           html += '<div>' + (screenshotPath ? imgTag(screenshotPath) : '<div class="shot"><div class="caption">No screenshot</div></div>') + '</div>';

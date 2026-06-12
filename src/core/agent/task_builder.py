@@ -6,7 +6,11 @@ from ..types import (
     ExecutionTaskApply, ExecutionTaskPlanningLocateApply,
     ElementCacheFeature, ExecutionTaskHitBy, Rect, LocateCache
 )
+from ..uitree.debug import capture_debug_tree
+from ..uitree.service import uitree_manager
 from .conversation_history import ConversationHistory
+from common.config import settings
+from common.exceptions import ActionExecutionError
 from common.logger import logger
 
 
@@ -43,6 +47,227 @@ class TaskBuilder:
         self.task_cache = task_cache
         self.action_space = action_space or []
         self.wait_after_action = wait_after_action
+
+    @staticmethod
+    def _serialize_element_ref(element_ref: Any) -> Optional[Dict[str, Any]]:
+        if not element_ref:
+            return None
+        if hasattr(element_ref, "to_dict"):
+            return element_ref.to_dict()
+        if isinstance(element_ref, dict):
+            return dict(element_ref)
+        return None
+
+    @classmethod
+    def _serialize_locator_candidates(cls, candidates: Any) -> List[Dict[str, Any]]:
+        serialized: List[Dict[str, Any]] = []
+        for candidate in candidates or []:
+            item = cls._serialize_element_ref(candidate)
+            if item:
+                serialized.append(item)
+        return serialized
+
+    @staticmethod
+    def _resolve_action_target(
+        element: Optional[LocateResultElement],
+        *,
+        device_type: Optional[str] = None,
+        action_type: str = "Tap",
+    ) -> Dict[str, Any]:
+        if not element:
+            return {"selector": None, "selector_type": None, "selector_ref": None, "position": None}
+
+        candidates = []
+        if element.element_ref:
+            candidates.append(element.element_ref)
+        candidates.extend(element.locator_candidates or [])
+
+        selector_ref = uitree_manager.select_best_candidate(
+            candidates,
+            device_type=device_type,
+            action_type=action_type.lower(),
+            actionable_only=True,
+        )
+        selector = selector_ref.get("selector_value") if selector_ref else None
+        selector_type = selector_ref.get("selector_type") if selector_ref else None
+
+        return {
+            "selector": selector,
+            "selector_type": selector_type,
+            "selector_ref": selector_ref,
+            "position": element.center,
+        }
+
+    @classmethod
+    def _build_locate_result_from_node(cls, matched_node: Any, description: str) -> Optional[LocateResultElement]:
+        if not matched_node or not getattr(matched_node, "bounds", None):
+            return None
+        left, top, width, height = matched_node.bounds
+        rect = Rect(left=left, top=top, width=width, height=height)
+        return LocateResultElement(
+            center=(rect.left + rect.width / 2, rect.top + rect.height / 2),
+            rect=rect,
+            el_type=getattr(matched_node, "control_type", None) or getattr(matched_node, "tag", None) or "element",
+            description=getattr(matched_node, "name", None) or description,
+            element_ref=cls._serialize_element_ref(getattr(matched_node, "element_ref", None)),
+            locator_candidates=cls._serialize_locator_candidates(getattr(matched_node, "locator_candidates", None)),
+        )
+
+    def _refresh_action_target(
+        self,
+        element: Optional[LocateResultElement],
+        *,
+        device_type: Optional[str] = None,
+        action_type: str = "Tap",
+    ) -> Optional[Dict[str, Any]]:
+        if not element or not getattr(self.device, "get_dom_tree", None):
+            return None
+        description = (element.description or "").strip()
+        if not description:
+            return None
+        try:
+            raw_tree = self.device.get_dom_tree()
+            matched_node = uitree_manager.find_best_match(raw_tree, description, device_type=device_type)
+            refreshed_element = self._build_locate_result_from_node(matched_node, description)
+            if not refreshed_element:
+                return None
+            refreshed_target = self._resolve_action_target(
+                refreshed_element,
+                device_type=device_type,
+                action_type=action_type,
+            )
+            if not refreshed_target.get("selector_ref") and not refreshed_target.get("position"):
+                return None
+            return refreshed_target
+        except Exception as exc:
+            logger.debug(f"refresh action target failed: action={action_type}, description={description}, error={exc}")
+            return None
+
+    @staticmethod
+    def _append_action_recovery_log(task: Any, record: Dict[str, Any]) -> None:
+        if task is None:
+            return
+        current_log = getattr(task, "log", None)
+        if not isinstance(current_log, dict):
+            current_log = {}
+            setattr(task, "log", current_log)
+        recovery_log = current_log.setdefault("action_recovery", [])
+        if isinstance(recovery_log, list):
+            recovery_log.append(record)
+
+    def _execute_action_with_retry(
+        self,
+        *,
+        action_type: str,
+        element: Optional[LocateResultElement],
+        action_target: Dict[str, Any],
+        run_action: Callable[[Dict[str, Any]], None],
+        allow_position_fallback: bool = False,
+        task: Any = None,
+    ) -> None:
+        device_type = getattr(self.device, "interface_type", None)
+        try:
+            run_action(action_target)
+            return
+        except Exception as first_error:
+            self._append_action_recovery_log(
+                task,
+                {
+                    "stage": "initial_failure",
+                    "action_type": action_type,
+                    "selector_ref": action_target.get("selector_ref"),
+                    "position": action_target.get("position"),
+                    "error": str(first_error),
+                },
+            )
+            logger.debug(
+                f"action execution failed, try refresh and retry: action={action_type}, "
+                f"selector_ref={action_target.get('selector_ref')}, error={first_error}"
+            )
+
+        refreshed_target = self._refresh_action_target(
+            element,
+            device_type=device_type,
+            action_type=action_type,
+        )
+        if refreshed_target:
+            try:
+                self._append_action_recovery_log(
+                    task,
+                    {
+                        "stage": "refresh_retry",
+                        "action_type": action_type,
+                        "selector_ref": refreshed_target.get("selector_ref"),
+                        "position": refreshed_target.get("position"),
+                    },
+                )
+                logger.debug(
+                    f"retry action with refreshed target: action={action_type}, "
+                    f"selector_ref={refreshed_target.get('selector_ref')}"
+                )
+                run_action(refreshed_target)
+                return
+            except Exception as retry_error:
+                self._append_action_recovery_log(
+                    task,
+                    {
+                        "stage": "refresh_retry_failure",
+                        "action_type": action_type,
+                        "selector_ref": refreshed_target.get("selector_ref"),
+                        "position": refreshed_target.get("position"),
+                        "error": str(retry_error),
+                    },
+                )
+                logger.debug(
+                    f"refreshed action target retry failed: action={action_type}, "
+                    f"selector_ref={refreshed_target.get('selector_ref')}, error={retry_error}"
+                )
+
+        fallback_position = None
+        if allow_position_fallback:
+            fallback_position = refreshed_target.get("position") if refreshed_target else None
+            if not fallback_position:
+                fallback_position = action_target.get("position")
+        if allow_position_fallback and fallback_position:
+            try:
+                self._append_action_recovery_log(
+                    task,
+                    {
+                        "stage": "position_fallback",
+                        "action_type": action_type,
+                        "position": fallback_position,
+                    },
+                )
+                logger.debug(f"fallback action to position: action={action_type}, position={fallback_position}")
+                if action_type == "Tap":
+                    self.device.click(position=fallback_position)
+                elif action_type == "ClearInput":
+                    self.device.click(position=fallback_position)
+                else:
+                    raise ActionExecutionError(
+                        f"Unsupported position fallback action: {action_type}",
+                        data={"action_type": action_type},
+                    )
+                return
+            except Exception as fallback_error:
+                raise ActionExecutionError(
+                    f"Action recovery failed after refresh and position fallback: {fallback_error}",
+                    data={
+                        "action_type": action_type,
+                        "selector_ref": action_target.get("selector_ref"),
+                        "refreshed_selector_ref": refreshed_target.get("selector_ref") if refreshed_target else None,
+                        "position": fallback_position,
+                    },
+                ) from fallback_error
+
+        raise ActionExecutionError(
+            f"Action recovery failed after refresh retry: {action_type}",
+            data={
+                "selector_ref": action_target.get("selector_ref"),
+                "refreshed_selector_ref": refreshed_target.get("selector_ref") if refreshed_target else None,
+                "position": action_target.get("position"),
+            },
+        )
     
     async def build(
         self,
@@ -209,11 +434,30 @@ class TaskBuilder:
             
             element = None
             hit_by = None
+            raw_tree = None
+            device_type = getattr(self.device, "interface_type", None)
             
             # Try plan direct hit
             locate_param_obj = param
             if isinstance(param, dict):
                 locate_param_obj = DetailedLocateParam(**param) if param.get("prompt") else locate_param
+
+            if settings.DEBUG:
+                try:
+                    prompt_text = (
+                        locate_param_obj.prompt
+                        if isinstance(locate_param_obj.prompt, str)
+                        else str(locate_param_obj.prompt)
+                    )
+                    raw_tree = self.device.get_dom_tree()
+                    capture_debug_tree(
+                        self.device,
+                        prompt_text,
+                        raw_tree=raw_tree,
+                        device_type=device_type,
+                    )
+                except Exception as e:
+                    logger.debug(f"capture_debug_tree error: {e}")
             
             if locate_param_obj.located_pixel_bbox and not locate_param_obj.deep_locate:
                 bbox = locate_param_obj.located_pixel_bbox
@@ -249,6 +493,46 @@ class TaskBuilder:
                                 hit_by = ExecutionTaskHitBy(**{"from": "Cache", "context": {"cacheEntry": cache_entry}})
                         except Exception as e:
                             logger.debug(f"rectMatchesCacheFeature error: {e}")
+
+            # Try native UI tree hit for non-web devices before AI vision locate
+            if not element and device_type not in ("web", "browser"):
+                try:
+                    prompt_text = (
+                        locate_param_obj.prompt
+                        if isinstance(locate_param_obj.prompt, str)
+                        else str(locate_param_obj.prompt)
+                    )
+                    if raw_tree is None:
+                        raw_tree = self.device.get_dom_tree()
+                    matched_node = uitree_manager.find_best_match(raw_tree, prompt_text, device_type=device_type)
+                    if matched_node and matched_node.bounds:
+                        left, top, width, height = matched_node.bounds
+                        rect = Rect(left=left, top=top, width=width, height=height)
+                        element = LocateResultElement(
+                            center=(rect.left + rect.width / 2, rect.top + rect.height / 2),
+                            rect=rect,
+                            el_type=matched_node.control_type or matched_node.tag or "element",
+                            description=matched_node.name or prompt_text,
+                            element_ref=self._serialize_element_ref(matched_node.element_ref),
+                            locator_candidates=self._serialize_locator_candidates(matched_node.locator_candidates),
+                        )
+                        hit_by = ExecutionTaskHitBy(
+                            **{
+                                "from": "UI Tree",
+                                "context": {
+                                    "path": matched_node.path,
+                                    "tag": matched_node.tag,
+                                    "controlType": matched_node.control_type,
+                                    "elementRef": self._serialize_element_ref(matched_node.element_ref),
+                                    "locatorCandidates": self._serialize_locator_candidates(matched_node.locator_candidates),
+                                },
+                            }
+                        )
+                        logger.debug(
+                            f"ui tree locate hit: prompt={prompt_text}, path={matched_node.path}, bounds={matched_node.bounds}"
+                        )
+                except Exception as e:
+                    logger.debug(f"ui tree locate failed: {e}")
             
             # AI locate (if not found from plan or cache)
             if not element:
@@ -315,11 +599,19 @@ class TaskBuilder:
                 if isinstance(value, LocateResultElement):
                     element = value
                     break
-            position = element.center if element else None
+            action_target = self._resolve_action_target(
+                element,
+                device_type=getattr(self.device, "interface_type", None),
+                action_type=action_type,
+            )
+            position = action_target["position"]
             ui_context = task_context.get("ui_context")
             ratio = getattr(ui_context, "shrunk_shot_to_logical_ratio", 1.0) if ui_context else 1.0
             if position and ratio and ratio != 1.0:
                 position = (position[0] / ratio, position[1] / ratio)
+            selector = action_target["selector"]
+            selector_type = action_target["selector_type"]
+            selector_ref = action_target["selector_ref"]
             if action_type == "Finished":
                 return {"output": param}
             if action_type == "Sleep":
@@ -334,7 +626,24 @@ class TaskBuilder:
                 raise
 
             if action_type == "Tap":
-                self.device.click(position=position)
+                self._execute_action_with_retry(
+                    action_type=action_type,
+                    element=element,
+                    action_target={
+                        "selector": selector,
+                        "selector_type": selector_type,
+                        "selector_ref": selector_ref,
+                        "position": position,
+                    },
+                    allow_position_fallback=True,
+                    task=task_context.get("task"),
+                    run_action=lambda target: self.device.click(
+                        selector=target.get("selector"),
+                        selector_type=target.get("selector_type"),
+                        selector_ref=target.get("selector_ref"),
+                        position=target.get("position"),
+                    ),
+                )
             elif action_type == "RightClick":
                 self.device.right_click(position=position)
             elif action_type == "DoubleClick":
@@ -342,7 +651,25 @@ class TaskBuilder:
             elif action_type == "Hover":
                 self.device.hover(position=position)
             elif action_type == "Input":
-                self.device.input(str(param.get("value", "")), position=position, clear_before=param.get("mode", "replace") in ("replace", "clear"))
+                self._execute_action_with_retry(
+                    action_type=action_type,
+                    element=element,
+                    action_target={
+                        "selector": selector,
+                        "selector_type": selector_type,
+                        "selector_ref": selector_ref,
+                        "position": position,
+                    },
+                    task=task_context.get("task"),
+                    run_action=lambda target: self.device.input(
+                        str(param.get("value", "")),
+                        selector=target.get("selector"),
+                        selector_type=target.get("selector_type"),
+                        selector_ref=target.get("selector_ref"),
+                        position=target.get("position"),
+                        clear_before=param.get("mode", "replace") in ("replace", "clear"),
+                    ),
+                )
             elif action_type == "KeyboardPress":
                 key_name = param.get("key_name") or param.get("keyName")
                 self.device.keyboard_press(key_name)
@@ -352,7 +679,24 @@ class TaskBuilder:
                 self.device.long_press(position=position, duration=param.get("duration", 500))
             elif action_type == "ClearInput":
                 if position:
-                    self.device.click(position=position)
+                    self._execute_action_with_retry(
+                        action_type=action_type,
+                        element=element,
+                        action_target={
+                            "selector": selector,
+                            "selector_type": selector_type,
+                            "selector_ref": selector_ref,
+                            "position": position,
+                        },
+                        allow_position_fallback=True,
+                        task=task_context.get("task"),
+                        run_action=lambda target: self.device.click(
+                            selector=target.get("selector"),
+                            selector_type=target.get("selector_type"),
+                            selector_ref=target.get("selector_ref"),
+                            position=target.get("position"),
+                        ),
+                    )
                 self.device.keyboard_press("Control+A")
                 self.device.keyboard_press("Backspace")
             elif action_type == "Pinch":

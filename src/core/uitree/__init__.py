@@ -46,6 +46,9 @@ from core.uitree import capture_debug_tree
 - `capture_debug_tree`
   面向调试链路的辅助函数。会在 `settings.DEBUG` 开启时抓取并保存原始/解析后 UI tree。
 
+- `UITREE_SCHEMA_VERSION`
+  当前 UITree 调试文件与完整树结构所对应的 schema 版本。
+
 常见使用场景
 ------------
 
@@ -187,6 +190,187 @@ capture_debug_tree(...)
 
 而不是自己额外包一层复杂异常处理，因为该函数本身就是为“失败不影响主流程”设计的。
 
+调试文件格式说明
+----------------
+
+当前 UITree 调试输出统一为两类 JSON 文件：
+
+- `*_uitree_debug.json`
+- `*_uitree_parsed_debug.json`
+
+### 1. `*_uitree_debug.json`
+
+该文件保存“归一化后的原始树结构”。
+
+设计目标：
+
+- 保留设备返回的结构信息
+- 去掉调用协议外壳
+- 不再直接混入 XML 字符串
+- 保证后续模块拿到的是 JSON 结构
+
+当前结构示意：
+
+```json
+{
+  "schema_version": "1.0.0",
+  "description": "文本编辑区域",
+  "device_type": "windows",
+  "source_data_type": "dict",
+  "payload": {
+    "tag": "Window",
+    "attributes": {
+      "Name": "MainWindow",
+      "AutomationId": "root"
+    },
+    "children": [
+      {
+        "tag": "Edit",
+        "attributes": {
+          "Name": "文本编辑区域"
+        },
+        "children": []
+      }
+    ]
+  }
+}
+```
+
+字段说明：
+
+- `schema_version`
+  当前调试文件使用的 schema 版本。后续如果结构演进，应优先通过该字段做兼容判断
+
+- `description`
+  触发这次抓取时的元素描述
+
+- `device_type`
+  当前设备类型，例如 `windows`、`browser`、`ios`、`hypium`
+
+- `source_data_type`
+  原始输入的 Python 类型名，例如 `dict`、`str`
+
+- `payload`
+  已归一化后的结构化树数据
+
+注意：
+
+- 如果设备原始返回是 XML，`payload` 中会变成 JSON 结构
+- 如果设备原始返回是 JSON 字符串，也会先解析再落盘
+- 常见包装壳如 `content`、`xml`、`value`、`source` 会被自动剥离
+
+### 2. `*_uitree_parsed_debug.json`
+
+该文件保存“统一领域模型后的结果”，用于后续模块直接消费。
+
+设计目标：
+
+- 提供稳定的统一结构
+- 同时兼顾树形查看和节点平铺遍历
+- 方便定位、调试、统计和二次分析
+
+当前结构示意：
+
+```json
+{
+  "schema_version": "1.0.0",
+  "description": "文本编辑区域",
+  "device_type": "windows",
+  "nodes_count": 2,
+  "tree": {
+    "name": "MainWindow",
+    "tag": "Window",
+    "control_type": "Window",
+    "automation_id": "root",
+    "class_name": "",
+    "bounds": [0.0, 0.0, 400.0, 800.0],
+    "path": ["MainWindow"],
+    "depth": 0,
+    "attributes": {
+      "Name": "MainWindow",
+      "AutomationId": "root"
+    },
+    "children": [
+      {
+        "name": "文本编辑区域",
+        "tag": "Edit",
+        "control_type": "Edit",
+        "automation_id": "",
+        "class_name": "",
+        "bounds": [10.0, 20.0, 200.0, 40.0],
+        "path": ["MainWindow", "文本编辑区域"],
+        "depth": 1,
+        "attributes": {
+          "Name": "文本编辑区域"
+        },
+        "children": []
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "name": "MainWindow",
+      "tag": "Window",
+      "control_type": "Window",
+      "automation_id": "root",
+      "class_name": "",
+      "path": ["MainWindow"],
+      "depth": 0,
+      "bounds": [0.0, 0.0, 400.0, 800.0]
+    },
+    {
+      "name": "文本编辑区域",
+      "tag": "Edit",
+      "control_type": "Edit",
+      "automation_id": "",
+      "class_name": "",
+      "path": ["MainWindow", "文本编辑区域"],
+      "depth": 1,
+      "bounds": [10.0, 20.0, 200.0, 40.0]
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `schema_version`
+  当前解析结果文件的 schema 版本
+
+- `description`
+  当前抓取对应的元素描述
+
+- `device_type`
+  当前设备类型
+
+- `nodes_count`
+  平铺节点总数
+
+- `tree`
+  完整统一树结构，对应 `UIElement.to_dict()`
+
+- `nodes`
+  平铺后的节点列表，适合快速检索和统计
+
+对后续模块的建议：
+
+- 如果你需要完整父子关系，用 `tree`
+- 如果你需要快速筛选、遍历、查找候选节点，用 `nodes`
+- 如果你需要稳定消费调试数据，优先读取 `parsed_debug.json`
+
+### 推荐读取策略
+
+如果其他模块要读取调试产物，建议优先级如下：
+
+1. 优先读取 `*_uitree_parsed_debug.json`
+2. 仅在需要分析设备原始返回差异时，再读取 `*_uitree_debug.json`
+
+原因是：
+
+- `parsed` 文件结构更稳定
+- `raw` 文件仍然保留设备差异
+- 上层业务更适合依赖统一结构而不是底层差异
+
 与其他模块的推荐衔接方式
 ------------------------
 
@@ -225,6 +409,7 @@ capture_debug_tree(...)
 如果以后其他模块需要接入 UITree，请优先把这里当成唯一入口使用。
 """
 from .debug import capture_debug_tree
+from .dump import UITREE_SCHEMA_VERSION
 from .models import Bounds, UIElement
 from .service import UITreeManager, uitree_manager
 
@@ -232,6 +417,7 @@ __all__ = [
     "Bounds",
     "UIElement",
     "UITreeManager",
+    "UITREE_SCHEMA_VERSION",
     "capture_debug_tree",
     "uitree_manager",
 ]

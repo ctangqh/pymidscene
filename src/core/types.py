@@ -15,6 +15,8 @@ class LocateResultElement(BaseModel):
     el_type: str = "element"  # 控件类型
     description: str = ""
     dpr: Optional[float] = None
+    element_ref: Optional[Dict[str, Any]] = None
+    locator_candidates: List[Dict[str, Any]] = Field(default_factory=list)
 
 # --- Locate Parameters ---
 class DetailedLocateParam(BaseModel):

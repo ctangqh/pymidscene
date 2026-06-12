@@ -1,8 +1,29 @@
+import atexit
 import sys
-from loguru import logger
-from typing import Optional
 from pathlib import Path
+from typing import Optional
+
+from loguru import logger
 from .config import settings
+
+
+def _should_use_enqueue() -> bool:
+    """Windows 下多短进程串行执行时，队列日志容易在退出阶段产生反序列化噪音。"""
+    return not sys.platform.startswith("win")
+
+
+def _complete_logger() -> None:
+    try:
+        completion = logger.complete()
+        if hasattr(completion, "__await__"):
+            try:
+                import asyncio
+
+                asyncio.run(completion)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None, debug: Optional[bool] = None) -> None:
@@ -32,7 +53,7 @@ def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None
         sys.stdout,
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-        enqueue=True,
+        enqueue=_should_use_enqueue(),
     )
     
     # 文件输出（如果配置了日志文件）
@@ -46,7 +67,7 @@ def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None
             rotation="10 MB",
             retention="30 days",
             compression="zip",
-            enqueue=True,
+            enqueue=_should_use_enqueue(),
         )
         logger.info(f"Log file: {log_path}")
     
@@ -55,5 +76,6 @@ def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None
 
 # 初始化默认日志
 setup_logger()
+atexit.register(_complete_logger)
 
 __all__ = ["logger", "setup_logger"]

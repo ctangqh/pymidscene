@@ -256,6 +256,52 @@ class BaseMcpDevice(BaseDevice):
                 return getattr(part, "data", None) or getattr(part, "text", None)
         return None
 
+    @staticmethod
+    def _selector_ref(selector: Optional[str], **kwargs) -> Dict[str, Any]:
+        ref = kwargs.get("selector_ref")
+        if isinstance(ref, dict):
+            normalized_ref = dict(ref)
+        else:
+            normalized_ref = {
+                "ref_kind": "selector",
+                "source": "device_call",
+                "selector_value": selector,
+                "selector_type": kwargs.get("selector_type"),
+                "actionable": bool(selector),
+                "persistable": True,
+                "requires_resolution": False,
+                "resolved": False,
+                "extra": {},
+            }
+        normalized_ref.setdefault("ref_kind", "selector")
+        normalized_ref.setdefault("source", "device_call")
+        normalized_ref.setdefault("selector_value", selector)
+        normalized_ref.setdefault("selector_type", kwargs.get("selector_type"))
+        normalized_ref.setdefault("actionable", bool(normalized_ref.get("selector_value")))
+        normalized_ref.setdefault("persistable", True)
+        normalized_ref.setdefault("requires_resolution", False)
+        normalized_ref.setdefault("resolved", False)
+        normalized_ref.setdefault("extra", {})
+        return normalized_ref
+
+    def resolve_selector_ref(
+        self,
+        selector: Optional[str] = None,
+        *,
+        action_type: str = "tap",
+        **kwargs,
+    ) -> Optional[Dict[str, Any]]:
+        ref = self._selector_ref(selector, **kwargs)
+        if not ref.get("selector_value"):
+            return None
+        return ref
+
+    @staticmethod
+    def _selector_value(selector: Optional[str], resolved_ref: Optional[Dict[str, Any]]) -> Optional[str]:
+        if resolved_ref and resolved_ref.get("selector_value"):
+            return resolved_ref.get("selector_value")
+        return selector
+
     # ==================== BaseDevice Implementation (Unified) ====================
 
     def goto(self, url: str, **kwargs) -> None:
@@ -376,6 +422,55 @@ class McpPlaywrightDevice(BaseMcpDevice):
         sign = {"down": ("0", str(dist)), "up": ("0", str(-dist))}.get(direction, ("0", str(dist)))
         return {"function": f"() => window.scrollBy({sign[0]}, {sign[1]})"}
 
+    @staticmethod
+    def _normalize_playwright_selector(selector: Optional[str], **kwargs) -> Dict[str, Any]:
+        ref = BaseMcpDevice._selector_ref(selector, **kwargs)
+        selector_type = ref.get("selector_type") or ""
+        selector_value = ref.get("selector_value") or selector
+        extra = ref.get("extra") or {}
+
+        if not selector_value:
+            return {}
+        if selector_type == "playwright-ref":
+            return {"element": selector_value}
+        if selector_type == "role" and extra.get("role") and extra.get("name"):
+            return {"target": f'{extra["role"]}="{extra["name"]}"'}
+        return {"target": selector_value}
+
+    def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="tap", **kwargs)
+        resolved_selector = self._selector_value(selector, resolved_ref)
+        if resolved_selector:
+            args = self._normalize_playwright_selector(
+                resolved_selector,
+                selector_ref=resolved_ref,
+                **kwargs,
+            )
+            self._submit(self._call_mcp("browser_click", args))
+            return
+        super().click(selector=selector, position=position, **kwargs)
+
+    def input(
+        self,
+        text: str,
+        selector: Optional[str] = None,
+        position: Optional[Tuple[float, float]] = None,
+        clear_before: bool = True,
+        **kwargs,
+    ) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="input", **kwargs)
+        resolved_selector = self._selector_value(selector, resolved_ref)
+        if resolved_selector:
+            args = self._normalize_playwright_selector(
+                resolved_selector,
+                selector_ref=resolved_ref,
+                **kwargs,
+            )
+            args["text"] = text
+            self._submit(self._call_mcp("browser_type", args))
+            return
+        super().input(text, selector=selector, position=position, clear_before=clear_before, **kwargs)
+
 
 class McpWinAppDevice(BaseMcpDevice):
     """
@@ -406,6 +501,121 @@ class McpWinAppDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "windows"
+
+    @staticmethod
+    def _winapp_element_args(selector_ref: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        ref = selector_ref or {}
+        selector_value = ref.get("selector_value")
+        if not selector_value:
+            return {}
+        selector_type = (ref.get("selector_type") or "accessibility id").strip()
+        if ref.get("ref_kind") == "handle" or selector_type.lower() == "element_id" or ref.get("resolved"):
+            return {"element_id": selector_value}
+        return {"selector": selector_value, "using": selector_type}
+
+    def resolve_selector_ref(
+        self,
+        selector: Optional[str] = None,
+        *,
+        action_type: str = "tap",
+        **kwargs,
+    ) -> Optional[Dict[str, Any]]:
+        ref = super().resolve_selector_ref(selector, action_type=action_type, **kwargs)
+        if not ref:
+            return None
+
+        selector_value = ref.get("selector_value")
+        selector_type = (ref.get("selector_type") or "accessibility id").strip()
+        if not selector_value:
+            return None
+        if ref.get("resolved") and (ref.get("ref_kind") == "handle" or selector_type.lower() == "element_id"):
+            return ref
+        if not ref.get("requires_resolution", False):
+            return ref
+
+        try:
+            result = self._submit(
+                self._call_mcp(
+                    "winapp_find_element",
+                    {"selector": selector_value, "using": selector_type},
+                )
+            )
+            element_id = self._parse_text(result).strip()
+            if not element_id:
+                return ref
+            return {
+                "platform": ref.get("platform", "windows"),
+                "ref_kind": "handle",
+                "source": "remote_resolved",
+                "selector_type": "element_id",
+                "selector_value": element_id,
+                "actionable": True,
+                "persistable": False,
+                "requires_resolution": False,
+                "resolved": True,
+                "extra": {
+                    "resolved_from": {
+                        "selector_type": selector_type,
+                        "selector_value": selector_value,
+                    },
+                    **dict(ref.get("extra") or {}),
+                },
+            }
+        except Exception as e:
+            logger.debug(
+                f"WinApp resolve selector ref failed, keep selector ref: selector={selector_value}, using={selector_type}, error={e}"
+            )
+            return ref
+
+    def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="tap", **kwargs)
+        action_args = self._winapp_element_args(resolved_ref)
+        if action_args:
+            try:
+                self._submit(
+                    self._call_mcp(
+                        "winapp_click_element",
+                        action_args,
+                    )
+                )
+                return
+            except Exception as e:
+                logger.debug(
+                    f"WinApp element click failed, fallback to coordinate click: ref={resolved_ref}, error={e}"
+                )
+        super().click(selector=selector, position=position, **kwargs)
+
+    def input(
+        self,
+        text: str,
+        selector: Optional[str] = None,
+        position: Optional[Tuple[float, float]] = None,
+        clear_before: bool = True,
+        **kwargs,
+    ) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="input", **kwargs)
+        action_args = self._winapp_element_args(resolved_ref)
+        if action_args:
+            try:
+                if clear_before:
+                    self._submit(
+                        self._call_mcp(
+                            "winapp_clear_element",
+                            action_args,
+                        )
+                    )
+                self._submit(
+                    self._call_mcp(
+                        "winapp_send_keys_to_element",
+                        {**action_args, "text": text},
+                    )
+                )
+                return
+            except Exception as e:
+                logger.debug(
+                    f"WinApp element input failed, fallback to generic input: ref={resolved_ref}, error={e}"
+                )
+        super().input(text, selector=selector, position=position, clear_before=clear_before, **kwargs)
     
     def action_space(self) -> List[Any]:
         from core.agent.action_space import WEB_ACTION_SPACE
@@ -437,6 +647,48 @@ class McpHypiumDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "hypium"
+
+    @staticmethod
+    def _normalize_mobile_selector(selector: Optional[str], **kwargs) -> Optional[str]:
+        ref = BaseMcpDevice._selector_ref(selector, **kwargs)
+        selector_value = ref.get("selector_value") or selector
+        selector_type = (ref.get("selector_type") or "").strip().lower()
+        if not selector_value:
+            return None
+        if selector_type in {"xpath", "predicate", "css", "text", "name", "label", "identifier", "resource-id", "accessibility-id"}:
+            return selector_value
+        return selector_value
+
+    def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="tap", **kwargs)
+        normalized_selector = self._normalize_mobile_selector(
+            self._selector_value(selector, resolved_ref),
+            selector_ref=resolved_ref,
+            **kwargs,
+        )
+        if normalized_selector:
+            self._execute_mcp_action("click", selector=normalized_selector, **kwargs)
+            return
+        super().click(selector=selector, position=position, **kwargs)
+
+    def input(
+        self,
+        text: str,
+        selector: Optional[str] = None,
+        position: Optional[Tuple[float, float]] = None,
+        clear_before: bool = True,
+        **kwargs,
+    ) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="input", **kwargs)
+        normalized_selector = self._normalize_mobile_selector(
+            self._selector_value(selector, resolved_ref),
+            selector_ref=resolved_ref,
+            **kwargs,
+        )
+        if normalized_selector:
+            self._execute_mcp_action("input", text=text, selector=normalized_selector, clear_before=clear_before, **kwargs)
+            return
+        super().input(text, selector=selector, position=position, clear_before=clear_before, **kwargs)
     
     def action_space(self) -> List[Any]:
         from core.agent.action_space import WEB_ACTION_SPACE
@@ -468,6 +720,37 @@ class McpAndroidDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "android"
+
+    def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="tap", **kwargs)
+        normalized_selector = McpHypiumDevice._normalize_mobile_selector(
+            self._selector_value(selector, resolved_ref),
+            selector_ref=resolved_ref,
+            **kwargs,
+        )
+        if normalized_selector:
+            self._execute_mcp_action("click", selector=normalized_selector, **kwargs)
+            return
+        super().click(selector=selector, position=position, **kwargs)
+
+    def input(
+        self,
+        text: str,
+        selector: Optional[str] = None,
+        position: Optional[Tuple[float, float]] = None,
+        clear_before: bool = True,
+        **kwargs,
+    ) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="input", **kwargs)
+        normalized_selector = McpHypiumDevice._normalize_mobile_selector(
+            self._selector_value(selector, resolved_ref),
+            selector_ref=resolved_ref,
+            **kwargs,
+        )
+        if normalized_selector:
+            self._execute_mcp_action("input", text=text, selector=normalized_selector, clear_before=clear_before, **kwargs)
+            return
+        super().input(text, selector=selector, position=position, clear_before=clear_before, **kwargs)
     
     def action_space(self) -> List[Any]:
         from core.agent.action_space import WEB_ACTION_SPACE
@@ -499,6 +782,37 @@ class McpIosDevice(BaseMcpDevice):
 
     @property
     def interface_type(self) -> str: return "ios"
+
+    def click(self, selector: Optional[str] = None, position: Optional[Tuple[float, float]] = None, **kwargs) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="tap", **kwargs)
+        normalized_selector = McpHypiumDevice._normalize_mobile_selector(
+            self._selector_value(selector, resolved_ref),
+            selector_ref=resolved_ref,
+            **kwargs,
+        )
+        if normalized_selector:
+            self._execute_mcp_action("click", selector=normalized_selector, **kwargs)
+            return
+        super().click(selector=selector, position=position, **kwargs)
+
+    def input(
+        self,
+        text: str,
+        selector: Optional[str] = None,
+        position: Optional[Tuple[float, float]] = None,
+        clear_before: bool = True,
+        **kwargs,
+    ) -> None:
+        resolved_ref = self.resolve_selector_ref(selector, action_type="input", **kwargs)
+        normalized_selector = McpHypiumDevice._normalize_mobile_selector(
+            self._selector_value(selector, resolved_ref),
+            selector_ref=resolved_ref,
+            **kwargs,
+        )
+        if normalized_selector:
+            self._execute_mcp_action("input", text=text, selector=normalized_selector, clear_before=clear_before, **kwargs)
+            return
+        super().input(text, selector=selector, position=position, clear_before=clear_before, **kwargs)
     
     def action_space(self) -> List[Any]:
         from core.agent.action_space import WEB_ACTION_SPACE
