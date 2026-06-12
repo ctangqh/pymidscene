@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from device import get_device, BaseDevice
 from llm import get_llm
 from core.locator import ElementLocator
@@ -8,24 +8,20 @@ from core.types import ServiceExtractOption
 from core.agent.yaml_runner import YamlScript, ScriptPlayer
 from common.logger import logger
 from common.config import settings
-from common.exceptions import ActionExecutionError, AssertionError
-import time
 import json
-import re
+import traceback
 from core.anomaly_guard import UIAnomalyGuard
 
 
 class PyMidscene:
-    """PyMidscene 主 SDK 入口类，完全兼容原Midscene API规范
-    
-    内部使用新的 Agent 架构，同时保持旧版 API 向后兼容。
-    """
+    """PyMidscene 主 SDK 入口类"""
     
     def __init__(
         self,
         device_provider: Optional[str] = None,
         llm_provider: Optional[str] = None,
         vision_provider: Optional[str] = None,
+        debug: bool = False,
         **kwargs
     ):
         if device_provider is None:
@@ -36,26 +32,29 @@ class PyMidscene:
         vision_options = kwargs.get("vision_options", {})
 
         self.device: BaseDevice = get_device(device_provider, **device_options)
-        self.browser = self.device  # 兼容旧代码的别名
         self.llm = get_llm(llm_provider, **llm_options)
         self.vision_model = self._init_vision_model(vision_provider, vision_options)
         
-        # Legacy locator (still works for backward compat)
+        # Debug mode
+        self.debug = debug
+        if self.debug:
+            settings.DEBUG = True
+            logger.info("PyMidscene 调试模式已启用")
+        
+        # Legacy locator (we'll remove this later, but keep it just in case)
         self.locator = ElementLocator(self.device, self.llm, self.vision_model)
         
-        # New Agent-based architecture
+        # Agent-based architecture (only mode now)
         self._agent: Optional[Agent] = None
-        self._use_agent = kwargs.get("use_agent", True)
-        self._agent_options = kwargs  # 保存所有选项供 Agent 使用
+        self._agent_options = kwargs
         
         self._launched = False
-        # 执行上下文，存储变量、结果等
         self.context: Dict[str, Any] = {}
         
-        # 统一的事件循环管理
+        # Event loop management
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    def _init_vision_model(self, vision_provider: Optional[str], vision_options: Optional[Dict[str, Any]] = None):
+    def _init_vision_model(self, vision_provider: Optional[str], vision_options: Optional[Dict[str, Any]] = None) -> Any:
         if not settings.LOCATE_USE_VISION:
             return None
 
@@ -63,7 +62,6 @@ class PyMidscene:
         provider = vision_provider or vision_config.provider
         options = dict(vision_options or {})
 
-        # 默认复用视觉配置；若视觉未单独配置，则会自动继承 llm_config。
         options.setdefault("model", vision_config.model)
         options.setdefault("base_url", vision_config.base_url)
         options.setdefault("api_key", vision_config.api_key)
@@ -91,28 +89,21 @@ class PyMidscene:
         return self._loop
 
     def _run_async(self, coro):
-        """在统一的事件循环中运行异步协程"""
         loop = self._get_loop()
         if loop.is_running():
-            # 如果已经在运行（例如在另一个异步任务中），尝试在当前线程运行
-            return self._run_coroutine_same_thread(coro)
+            try:
+                coro.send(None)
+            except StopIteration as done:
+                return done.value
+            finally:
+                if hasattr(coro, "close"):
+                    coro.close()
+            raise RuntimeError("PyMidscene sync SDK cannot run an async operation that suspends while an event loop is already running")
         return loop.run_until_complete(coro)
-
-    def _run_coroutine_same_thread(self, coro):
-        try:
-            coro.send(None)
-        except StopIteration as done:
-            return done.value
-        finally:
-            if hasattr(coro, "close"):
-                coro.close()
-        raise RuntimeError("PyMidscene sync SDK cannot run an async operation that suspends while an event loop is already running")
     
     @property
     def agent(self) -> Agent:
         """Get or create the Agent instance"""
-        if not self._use_agent:
-            raise RuntimeError("Agent is disabled, set use_agent=True in constructor to enable")
         if self._agent is None:
             self._agent = Agent(
                 self.device,
@@ -124,143 +115,255 @@ class PyMidscene:
     
     def launch(self) -> None:
         """启动设备"""
-        if not self._launched:
-            self.device.launch()
-            self._launched = True
+        try:
+            if not self._launched:
+                self.device.launch()
+                self._launched = True
+        except Exception as e:
+            self._handle_error("启动设备", e)
     
-    def close(self) -> None:
-        """关闭设备"""
-        if self._launched:
-            self.device.close()
-            self._launched = False
-            if self._loop and not self._loop.is_running():
-                self._loop.close()
+    def close(self, **kwargs) -> None:
+        """关闭应用（如果是原生设备）并关闭设备"""
+        try:
+            interface_type = getattr(self.device, "interface_type", "")
+            if interface_type not in ("web", "browser"):
+                if hasattr(self.device, "_execute_mcp_action"):
+                    tool_name = None
+                    if interface_type in ("windows", "hypium", "android", "ios"):
+                        tool_name = "delete_session"
+                    
+                    if tool_name:
+                        try:
+                            self.device._execute_mcp_action(tool_name, **kwargs)
+                        except Exception as e:
+                            logger.warning(f"关闭应用时发生错误: {e}")
+            
+            if self._launched:
+                self.device.close()
+                self._launched = False
+                if self._loop and not self._loop.is_running():
+                    self._loop.close()
+        except Exception as e:
+            logger.warning(f"关闭设备时发生错误: {e}")
     
-    def goto(self, url: str, **kwargs) -> None:
-        """跳转到指定 URL"""
-        if not self._launched:
-            self.launch()
-        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
-        self.device.goto(url, **kwargs)
-        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
-    
-    def click(self, element_description: str, **kwargs) -> None:
-        """
-        通过自然语言描述点击元素
-        """
-        logger.info(f"点击元素: {element_description}")
-        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("click")
-        position = self.locator.locate(element_description, **kwargs)
-        self.device.click(position=position)
-        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("click")
-    
-    def input(self, element_description: str, text: str, **kwargs) -> None:
-        """
-        通过自然语言描述输入文本
-        """
-        logger.info(f"向 {element_description} 输入文本: {text}")
-        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("input")
-        position = self.locator.locate(element_description, **kwargs)
-        interface_type = getattr(self.device, "interface_type", "")
-        selector = getattr(self.locator.last_result, "selector", None)
-        if interface_type not in ("web", "browser") and selector:
-            self.device.input(text, selector=selector, position=position)
-            return
-        if interface_type not in ("web", "browser") and position:
-            # Native clients often need an explicit focus step before text input.
-            self.device.click(position=position)
-        self.device.input(text, position=position)
-        UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("input")
-    
-    def extract(self, extract_description: str, **kwargs) -> Dict[str, Any]:
-        """
-        提取页面信息
-        """
-        logger.info(f"提取信息: {extract_description}")
-        return self.locator.extract_info(extract_description, **kwargs)
-    
-    def run_yaml(self, yaml_path: str, **kwargs) -> Dict[str, Any]:
-        """
-        运行 YAML 自动化流程
-        """
-        logger.info(f"运行 YAML 流程: {yaml_path}")
-        script = YamlScript.from_file(yaml_path)
-
-        async def _run():
-            player = ScriptPlayer(script, lambda: {"agent": self.agent, "freeFn": []})
-            await player.run()
-            return {"result": player.result, "status": player.status}
-
-        return self._run_async(_run())
-    
-    def screenshot(self, save_path: Optional[str] = None, **kwargs) -> bytes:
-        """截图"""
-        from pathlib import Path
-        path_obj: Optional[Path] = Path(save_path) if save_path is not None else None
-        return self.device.screenshot(path_obj, **kwargs)
-
-    def keyboard_press(self, key_name: str, **kwargs) -> Optional[Dict[str, Any]]:
-        """按下快捷键，并在前后执行异常页面检测"""
-        guard = UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm)
-        before_result = guard.handle_sync(f"before_keyboard_press_{key_name}")
-        logger.debug(f"[PyMidscene] keyboard_press before-guard result: key={key_name}, result={before_result}")
-        self.device.keyboard_press(key_name, **kwargs)
-        after_result = guard.handle_sync(f"after_keyboard_press_{key_name}")
-        logger.debug(f"[PyMidscene] keyboard_press after-guard result: key={key_name}, result={after_result}")
-        return after_result
-    
-    # === New Agent-based methods ===
-    
-    def ai_tap(self, element_description: str, **kwargs) -> None:
-        """使用 Agent AI 点击元素"""
-        self._run_async(self.agent.ai_tap(element_description, kwargs))
+    def goto(self, target: str, **kwargs) -> Any:
+        """跳转到指定目标：浏览器 → URL，原生设备 → 启动应用"""
+        try:
+            if not self._launched:
+                self.launch()
+            
+            interface_type = getattr(self.device, "interface_type", "")
+            if interface_type in ("web", "browser"):
+                logger.info(f"跳转到 URL: {target}")
+                UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
+                self.device.goto(target, **kwargs)
+                UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
+            else:
+                logger.info(f"启动应用: {target}")
+                if hasattr(self.device, "_execute_mcp_action"):
+                    tool_name = "create_session"
+                    params = {"app": target}
+                    params.update(kwargs)
+                    return self.device._execute_mcp_action(tool_name, **params)
+                
+                raise NotImplementedError(f"goto not fully implemented for device type: {type(self.device).__name__}")
+        except Exception as e:
+            self._handle_error("跳转/启动应用", e, {"target": target, "kwargs": kwargs})
     
     def ai_click(self, element_description: str, **kwargs) -> None:
-        """ai_tap 的别名"""
-        self.ai_tap(element_description, **kwargs)
+        """通过自然语言描述点击元素"""
+        try:
+            logger.info(f"点击元素: {element_description}")
+            self._run_async(self.agent.ai_tap(element_description, kwargs))
+            if self.debug:
+                logger.debug(f"调试: 点击操作完成")
+        except Exception as e:
+            self._handle_error("点击元素", e, {"element_description": element_description})
+    
+    # 保留 ai_tap 作为别名
+    def ai_tap(self, element_description: str, **kwargs) -> None:
+        self.ai_click(element_description, **kwargs)
     
     def ai_input(self, element_description: str, text: str, **kwargs) -> None:
-        """使用 Agent AI 输入文本"""
-        opt = dict(kwargs)
-        opt["value"] = text
-        self._run_async(self.agent.ai_input(element_description, opt))
+        """通过自然语言描述输入文本"""
+        try:
+            logger.info(f"向 {element_description} 输入文本: {text}")
+            opt = dict(kwargs)
+            opt["value"] = text
+            self._run_async(self.agent.ai_input(element_description, opt))
+            if self.debug:
+                logger.debug(f"调试: 输入操作完成")
+        except Exception as e:
+            self._handle_error("输入文本", e, {"element_description": element_description, "text": text})
+    
+    def ai_extract(self, extract_description: str, **kwargs) -> Any:
+        """提取页面信息"""
+        try:
+            logger.info(f"提取信息: {extract_description}")
+            opt = ServiceExtractOption(**kwargs) if kwargs else None
+            result = self._run_async(self.agent.ai_query(extract_description, opt))
+            if self.debug:
+                logger.debug(f"调试: 提取结果: {result}")
+            return result
+        except Exception as e:
+            self._handle_error("提取信息", e, {"extract_description": extract_description})
+    
+    # 保留 ai_query 作为别名
+    def ai_query(self, extract_description: str, **kwargs) -> Any:
+        return self.ai_extract(extract_description, **kwargs)
     
     def ai_act(self, task_prompt: str, **kwargs) -> Optional[str]:
-        """使用 Agent AI 自主规划执行"""
-        return self._run_async(self.agent.ai_act(task_prompt, kwargs))
+        """自主规划并执行任务"""
+        try:
+            return self._run_async(self.agent.ai_act(task_prompt, kwargs))
+        except Exception as e:
+            self._handle_error("执行任务", e, {"task_prompt": task_prompt})
     
     def ai_assert(self, assertion: str, msg: Optional[str] = None, **kwargs) -> None:
-        """使用 Agent AI 断言"""
-        opt = dict(kwargs)
-        self._run_async(self.agent.ai_assert(assertion, msg, opt or None))
-    
-    def ai_query(self, demand, **kwargs) -> Any:
-        """使用 Agent AI 查询页面信息"""
-        opt = ServiceExtractOption(**kwargs) if kwargs else None
-        return self._run_async(self.agent.ai_query(demand, opt))
-    
-    def ai_extract(self, demand, **kwargs) -> Any:
-        """ai_query 的别名，兼容原 Midscene API"""
-        return self.ai_query(demand, **kwargs)
+        """断言页面状态"""
+        try:
+            opt = dict(kwargs)
+            self._run_async(self.agent.ai_assert(assertion, msg, opt or None))
+        except Exception as e:
+            self._handle_error("断言", e, {"assertion": assertion, "msg": msg})
     
     def ai_wait_for(self, assertion: str, **kwargs) -> None:
-        """使用 Agent AI 等待断言成立"""
-        opt = dict(kwargs)
-        self._run_async(self.agent.ai_wait_for(assertion, opt or None))
+        """等待断言成立"""
+        try:
+            opt = dict(kwargs)
+            self._run_async(self.agent.ai_wait_for(assertion, opt or None))
+        except Exception as e:
+            self._handle_error("等待", e, {"assertion": assertion})
     
     def ai_locate(self, prompt: str, **kwargs) -> Dict[str, Any]:
-        """使用 Agent AI 定位元素"""
-        return self._run_async(self.agent.ai_locate(prompt, kwargs))
+        """定位元素"""
+        try:
+            return self._run_async(self.agent.ai_locate(prompt, kwargs))
+        except Exception as e:
+            self._handle_error("定位元素", e, {"prompt": prompt})
+    
+    def run_yaml(self, yaml_path: str, **kwargs) -> Dict[str, Any]:
+        """运行 YAML 自动化流程"""
+        try:
+            logger.info(f"运行 YAML 流程: {yaml_path}")
+            script = YamlScript.from_file(yaml_path)
 
-    def __enter__(self):
+            async def _run():
+                player = ScriptPlayer(script, lambda: {"agent": self.agent, "freeFn": []})
+                await player.run()
+                return {"result": player.result, "status": player.status}
+
+            return self._run_async(_run())
+        except Exception as e:
+            self._handle_error("运行 YAML 流程", e, {"yaml_path": yaml_path})
+    
+    def screenshot(self, filename: Optional[str] = None, **kwargs) -> bytes:
+        """截图
+        :param filename: 文件名（可选，如 "my_screenshot.png"），不指定则自动生成
+        :param kwargs: 其他参数
+        :return: 截图字节
+        """
+        try:
+            from pathlib import Path
+            from datetime import datetime
+
+            # 获取保存目录
+            save_dir = Path(settings.REPORT_SCREENSHOT_SAVE_DIR)
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            # 生成保存路径
+            if filename:
+                # 如果filename包含路径，使用它；否则使用默认目录
+                filename_path = Path(filename)
+                if filename_path.is_absolute():
+                    save_path = filename_path
+                else:
+                    save_path = save_dir / filename
+            else:
+                # 自动生成文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                save_path = save_dir / f"screenshot_{timestamp}.png"
+
+            # 保存截图
+            screenshot_bytes = self.device.screenshot(save_path, **kwargs)
+
+            if self.debug:
+                logger.debug(f"调试: 截图已保存到 {save_path}")
+
+            return screenshot_bytes
+        except Exception as e:
+            self._handle_error("截图", e, {"filename": filename})
+
+    def keyboard_press(self, key_name: str, **kwargs) -> Optional[Dict[str, Any]]:
+        """按下快捷键"""
+        try:
+            guard = UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm)
+            before_result = guard.handle_sync(f"before_keyboard_press_{key_name}")
+            logger.debug(f"[PyMidscene] keyboard_press before-guard result: key={key_name}, result={before_result}")
+            self.device.keyboard_press(key_name, **kwargs)
+            after_result = guard.handle_sync(f"after_keyboard_press_{key_name}")
+            logger.debug(f"[PyMidscene] keyboard_press after-guard result: key={key_name}, result={after_result}")
+            return after_result
+        except Exception as e:
+            self._handle_error("按下快捷键", e, {"key_name": key_name})
+    
+    def _handle_error(self, operation: str, exception: Exception, context: Optional[Dict[str, Any]] = None) -> None:
+        """内部错误处理方法"""
+        error_msg = (
+            f"PyMidscene 错误: {operation} 失败\n"
+            f"异常信息: {str(exception)}\n"
+        )
+        if context:
+            error_msg += f"上下文信息: {json.dumps(context, ensure_ascii=False, indent=2)}\n"
+        error_msg += f"堆栈跟踪:\n{traceback.format_exc()}\n"
+        logger.error(error_msg)
+        raise Exception(error_msg) from exception
+
+    def __enter__(self) -> "PyMidscene":
         self.launch()
         return self
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
 
-# 快捷方法
-def create_client(**kwargs) -> PyMidscene:
+def create_client(
+    device_provider: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+    vision_provider: Optional[str] = None,
+    mcp_name: Optional[str] = None,
+    mcp_server_url: Optional[str] = None,
+    debug: bool = False,
+    device_options: Optional[Dict[str, Any]] = None,
+    llm_options: Optional[Dict[str, Any]] = None,
+    vision_options: Optional[Dict[str, Any]] = None,
+    **kwargs
+) -> PyMidscene:
     """创建 PyMidscene 客户端"""
-    return PyMidscene(**kwargs)
+    try:
+        return PyMidscene(
+            device_provider=device_provider,
+            llm_provider=llm_provider,
+            vision_provider=vision_provider,
+            mcp_name=mcp_name,
+            mcp_server_url=mcp_server_url,
+            debug=debug,
+            device_options=device_options or {},
+            llm_options=llm_options or {},
+            vision_options=vision_options or {},
+            **kwargs
+        )
+    except Exception as e:
+        error_msg = (
+            f"创建 PyMidscene 客户端失败: {str(e)}\n\n"
+            f"参数: device_provider={device_provider}, llm_provider={llm_provider}, "
+            f"vision_provider={vision_provider}, mcp_name={mcp_name}, "
+            f"mcp_server_url={mcp_server_url}, debug={debug}\n\n"
+            f"堆栈跟踪:\n{traceback.format_exc()}\n\n"
+            f"常见问题:\n"
+            f"1. 检查 device_provider 是否正确（支持: mcp_winapp, mcp_hypium, mcp_android, mcp_ios, mcp_playwright, browser）\n"
+            f"2. 检查 mcp_name 是否在 config.MCP_SERVERS 中定义\n"
+            f"3. 检查对应的 MCP 服务器是否已启动\n"
+            f"4. 检查 LLM/VISION 配置是否正确（如 API Key）"
+        )
+        raise Exception(error_msg) from e
