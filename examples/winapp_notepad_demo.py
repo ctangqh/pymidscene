@@ -159,7 +159,20 @@ def save_ui_snapshot_artifacts(midscene: PyMidscene, artifact_prefix: str):
     }
 
 
+def record_report_checkpoint(midscene: PyMidscene, title: str, content: str = ""):
+    try:
+        midscene._run_async(midscene.agent.record_to_report(title, {"content": content}))
+        report_path = getattr(midscene.agent, "report_file", None)
+        if report_path:
+            logger.info(f"Report checkpoint saved: {title} -> {report_path}")
+    except Exception as e:
+        logger.warning(f"Failed to record report checkpoint '{title}': {e}")
+
+
 def main():
+    run_id = int(time.time() * 1000)
+    report_name = f"winapp-notepad-demo-{run_id}"
+
     llm_provider = settings.llm_config.provider or CURRENT_PROVIDER
     llm_options = {
         "base_url": settings.llm_config.base_url or CURRENT_BASE_URL,
@@ -188,13 +201,21 @@ def main():
         device_options={
             "mcp_name": "winapp",  # Matches settings.MCP_SERVERS
             "mcp_server_url": os.getenv("WINAPP_MCP_URL") or (settings.MCP_SERVERS.get("winapp").url if settings.MCP_SERVERS.get("winapp") else ""),
-        }
+        },
+        report_file_name=report_name,
+        generate_report=True,
+        persist_execution_dump=True,
+        auto_print_report_msg=True,
+        output_format="html-and-external-assets",
+        group_name="WinApp Notepad Demo Report",
+        group_description="Formal report generated from examples/winapp_notepad_demo.py",
     )
 
+    final_report_path = None
     try:
-        run_id = int(time.time() * 1000)
         logger.info("Starting WinApp MCP Demo...")
         logger.info(f"LLM model: {llm_options['model']}, Vision model: {vision_options.get('model')}")
+        logger.info(f"Report name: {report_name}")
 
         # 2. Launch the SDK (connects to MCP Server via SSE)
         midscene.launch()
@@ -209,11 +230,13 @@ def main():
         )
         logger.info(f"Session result: {result}")
         time.sleep(2)  # Wait for Notepad to fully start
+        record_report_checkpoint(midscene, "Session created", "Notepad session created successfully.")
 
         # 4. Use the unified SDK locator. For WinApp this now goes through the
         # visual-first locator path instead of hardcoded AutomationId input.
         logger.info("Locating Notepad editor and inputting text via PyMidscene...")
         midscene.input("文本编辑器", "Hello PyMidscene")
+        record_report_checkpoint(midscene, "Text input completed", "Text was entered into the Notepad editor.")
 
         # 5. Take a screenshot via MCP tool
         output_path = project_root / "output" / f"notepad_screenshot_{run_id}.png"
@@ -222,6 +245,7 @@ def main():
         logger.info(f"Taking screenshot: {output_path}")
         img_bytes = midscene.screenshot(str(output_path))
         logger.info(f"Screenshot saved: {output_path} ({len(img_bytes)} bytes)")
+        record_report_checkpoint(midscene, "Screenshot captured", f"Screenshot saved to {output_path}.")
 
         try:
             focus_source = midscene.device.get_page_content()
@@ -239,10 +263,16 @@ def main():
         logger.info("Sending Alt+F4 to trigger the unsaved-changes dialog...")
         guard_result = midscene.keyboard_press("Alt+F4")
         logger.info(f"Alt+F4 anomaly-guard result: {guard_result}")
+        record_report_checkpoint(midscene, "Alt+F4 sent", f"Anomaly guard result: {guard_result}")
         time.sleep(1)
 
         logger.info("Saving the first close-state UI snapshot with all detected control bounding boxes...")
         first_close_artifacts = save_ui_snapshot_artifacts(midscene, f"{run_id}_notepad_close_state_step1")
+        record_report_checkpoint(
+            midscene,
+            "Close-state snapshot saved",
+            f"Saved annotated close-state artifacts to {first_close_artifacts['annotated_path']}.",
+        )
 
         page_source_after_first_close = midscene.device.get_page_content()
         if not has_unsaved_dialog_controls(page_source_after_first_close):
@@ -250,7 +280,12 @@ def main():
             midscene.keyboard_press("Alt+F4")
             time.sleep(1)
             logger.info("Saving the second close-state UI snapshot with all detected control bounding boxes...")
-            save_ui_snapshot_artifacts(midscene, f"{run_id}_notepad_close_state_step2")
+            second_close_artifacts = save_ui_snapshot_artifacts(midscene, f"{run_id}_notepad_close_state_step2")
+            record_report_checkpoint(
+                midscene,
+                "Second close-state snapshot saved",
+                f"Saved second annotated close-state artifacts to {second_close_artifacts['annotated_path']}.",
+            )
         else:
             logger.info(
                 f"Unsaved-changes dialog controls detected after the first close click: {first_close_artifacts['source_path']}"
@@ -263,12 +298,19 @@ def main():
             vision_llm=midscene.vision_model or midscene.llm,
         ).handle_sync("dismiss_unsaved_changes_dialog")
         logger.info(f"Final anomaly-guard result: {final_guard_result}")
+        record_report_checkpoint(
+            midscene,
+            "Final anomaly guard handled dialog",
+            f"Final anomaly guard result: {final_guard_result}",
+        )
         time.sleep(2)
 
         logger.info("Demo completed successfully!")
+        record_report_checkpoint(midscene, "Demo completed", "WinApp Notepad demo completed successfully.")
 
     except Exception as e:
         logger.error(f"Demo failed: {e}")
+        record_report_checkpoint(midscene, "Demo failed", f"Demo failed: {e}")
     finally:
         # 6. Cleanup - close session and MCP connection
         try:
@@ -286,6 +328,12 @@ def main():
             logger.info("Session closed.")
         except:
             pass
+        try:
+            if getattr(midscene, "_agent", None) is not None:
+                final_report_path = midscene._run_async(midscene.agent._report_generator.finalize())
+                logger.info(f"Final report path: {final_report_path}")
+        except Exception as e:
+            logger.warning(f"Finalize report failed: {e}")
         midscene.close()
         logger.info("MCP connection closed.")
 

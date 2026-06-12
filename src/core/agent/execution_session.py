@@ -30,6 +30,7 @@ class TaskRunner:
         self.context_provider = context_provider
         self.options = options or {}
         self.tasks: List[ExecutionTask] = []
+        self._runner_id: str = str(uuid.uuid4())
         self._error_state = False
         self._latest_error_task: Optional[ExecutionTask] = None
         self._on_task_update = options.get("on_task_update") if options else None
@@ -84,8 +85,24 @@ class TaskRunner:
             try:
                 # Execute the task
                 executor = getattr(task, '_executor', None)
-                if executor:
+                ui_context: Optional[UIContext] = None
+                try:
                     ui_context = await self.context_provider()
+                except Exception:
+                    ui_context = None
+
+                if isinstance(task.log, dict):
+                    task_log = task.log
+                else:
+                    task_log = {}
+                    task.log = task_log
+                if ui_context is not None:
+                    task_log["ui_context"] = {
+                        "shot_size": getattr(ui_context, "shot_size", None),
+                        "screenshot_base64": getattr(ui_context, "screenshot", "") or "",
+                    }
+
+                if executor:
                     exec_result = await executor(task.param, {
                         "task": task,
                         "ui_context": ui_context,
@@ -157,7 +174,7 @@ class TaskRunner:
     def dump(self) -> Dict[str, Any]:
         """Dump execution state"""
         return {
-            "id": str(uuid.uuid4()),
+            "id": self._runner_id,
             "log_time": time.time(),
             "name": self.name,
             "tasks": [t.model_dump() for t in self.tasks],
