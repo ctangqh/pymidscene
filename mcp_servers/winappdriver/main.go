@@ -471,6 +471,184 @@ func (c *WDClient) Screenshot() ([]byte, error) {
 	return base64.StdEncoding.DecodeString(b64)
 }
 
+func (c *WDClient) screenshotWithSource() ([]byte, string, error) {
+	img, err := c.Screenshot()
+	if err == nil {
+		return img, "winappdriver", nil
+	}
+	if isNoSuchWindowErr(err) {
+		handle, recoverErr := c.recoverCurrentWindow()
+		if recoverErr == nil {
+			log.Printf("[WARN] WinAppDriver screenshot window was closed, recovered handle=%s and retrying screenshot", handle)
+			img, retryErr := c.Screenshot()
+			if retryErr == nil {
+				return img, "winappdriver_recovered_window", nil
+			}
+			err = fmt.Errorf("%v; retry after window recovery failed: %v", err, retryErr)
+		} else {
+			err = fmt.Errorf("%v; recover window failed: %v", err, recoverErr)
+		}
+	}
+
+	verboseLog("[WD] primary screenshot failed, trying window capture fallback: %v", err)
+	windowImg, windowErr := c.captureCurrentWindowScreenshot()
+	if windowErr == nil {
+		log.Printf("[WARN] WinAppDriver screenshot failed, using window capture fallback: %v", err)
+		return windowImg, "window_fallback", nil
+	}
+
+	verboseLog("[WD] window capture fallback failed, trying desktop capture fallback: %v", windowErr)
+	desktopImg, desktopErr := captureDesktopScreenshot()
+	if desktopErr == nil {
+		log.Printf("[WARN] WinAppDriver screenshot failed, using desktop capture fallback: %v; window fallback error: %v", err, windowErr)
+		return desktopImg, "desktop_fallback", nil
+	}
+
+	return nil, "", fmt.Errorf("primary screenshot failed: %v; window fallback failed: %v; desktop fallback failed: %w", err, windowErr, desktopErr)
+}
+
+func (c *WDClient) ScreenshotWithFallback() ([]byte, error) {
+	img, _, err := c.screenshotWithSource()
+	return img, err
+}
+
+func (c *WDClient) captureCurrentWindowScreenshot() ([]byte, error) {
+	if err := c.ensureCurrentWindow(); err != nil {
+		return nil, err
+	}
+	position, err := c.GetWindowPosition("")
+	if err != nil {
+		return nil, fmt.Errorf("get window position failed: %w", err)
+	}
+	size, err := c.GetWindowSize("")
+	if err != nil {
+		return nil, fmt.Errorf("get window size failed: %w", err)
+	}
+
+	x, ok := mapInt(position, "x")
+	if !ok {
+		return nil, fmt.Errorf("window position missing x: %v", position)
+	}
+	y, ok := mapInt(position, "y")
+	if !ok {
+		return nil, fmt.Errorf("window position missing y: %v", position)
+	}
+	width, ok := mapInt(size, "width")
+	if !ok {
+		return nil, fmt.Errorf("window size missing width: %v", size)
+	}
+	height, ok := mapInt(size, "height")
+	if !ok {
+		return nil, fmt.Errorf("window size missing height: %v", size)
+	}
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid window rect: x=%d y=%d width=%d height=%d", x, y, width, height)
+	}
+
+	return captureScreenRegion(x, y, width, height)
+}
+
+func captureDesktopScreenshot() ([]byte, error) {
+	script := `
+param([string]$OutputPath)
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+$bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+$graphics = [System.Drawing.Graphics]::FromImage($bmp)
+$graphics.CopyFromScreen($bounds.X, $bounds.Y, 0, 0, $bmp.Size)
+$bmp.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+$graphics.Dispose()
+$bmp.Dispose()
+`
+	return runPowerShellScreenshot(script)
+}
+
+func captureScreenRegion(x, y, width, height int) ([]byte, error) {
+	script := fmt.Sprintf(`
+param([string]$OutputPath)
+Add-Type -AssemblyName System.Drawing
+$bmp = New-Object System.Drawing.Bitmap(%d, %d)
+$graphics = [System.Drawing.Graphics]::FromImage($bmp)
+$graphics.CopyFromScreen(%d, %d, 0, 0, $bmp.Size)
+$bmp.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+$graphics.Dispose()
+$bmp.Dispose()
+`, width, height, x, y)
+	return runPowerShellScreenshot(script)
+}
+
+func runPowerShellScreenshot(script string) ([]byte, error) {
+	tempDir, err := os.MkdirTemp("", "winappdriver-screenshot-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp screenshot dir failed: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	scriptPath := tempDir + `\capture.ps1`
+	outputPath := tempDir + `\capture.png`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		return nil, fmt.Errorf("write powershell screenshot script failed: %w", err)
+	}
+
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath, "-OutputPath", outputPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("powershell screenshot failed: %v: %s", err, previewString(string(output), 300))
+	}
+	img, err := os.ReadFile(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("read powershell screenshot output failed: %w (stdout=%s)", err, previewString(string(output), 300))
+	}
+	if len(img) == 0 {
+		return nil, fmt.Errorf("powershell screenshot output is empty")
+	}
+	return img, nil
+}
+
+func (c *WDClient) ensureCurrentWindow() error {
+	_, err := c.GetWindowHandle()
+	if err == nil {
+		return nil
+	}
+	if !isNoSuchWindowErr(err) {
+		return err
+	}
+	handle, recoverErr := c.recoverCurrentWindow()
+	if recoverErr != nil {
+		return fmt.Errorf("current window invalid: %v; recover window failed: %v", err, recoverErr)
+	}
+	log.Printf("[WARN] Recovered current window handle: %s", handle)
+	return nil
+}
+
+func (c *WDClient) recoverCurrentWindow() (string, error) {
+	handles, err := c.GetWindowHandles()
+	if err != nil {
+		return "", err
+	}
+	if len(handles) == 0 {
+		return "", fmt.Errorf("no available window handles")
+	}
+	for i := len(handles) - 1; i >= 0; i-- {
+		handle := strings.TrimSpace(handles[i])
+		if handle == "" {
+			continue
+		}
+		if err := c.SwitchWindow(handle); err == nil {
+			return handle, nil
+		}
+	}
+	return "", fmt.Errorf("failed to switch to any available window handle: %v", handles)
+}
+
+func isNoSuchWindowErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such window")
+}
+
 func (c *WDClient) FindElement(strategy, selector string) (string, error) {
 	value, _, err := c.request("POST", "/session/:sessionId/element", map[string]string{
 		"using": strategy,
@@ -952,7 +1130,7 @@ func (s *MCPServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 	s.sessionsMu.Lock()
 	s.sessions[sessionID] = eventChan
 	s.sessionsMu.Unlock()
-	verboseLog("[MCP] SSE connected session=%s remote=%s", sessionID, r.RemoteAddr)
+	log.Printf("[INFO] [MCP] SSE connected session=%s remote=%s", sessionID, r.RemoteAddr)
 
 	fmt.Fprintf(w, "event: endpoint\ndata: /messages?session_id=%s\n\n", sessionID)
 	flusher.Flush()
@@ -964,7 +1142,7 @@ func (s *MCPServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 		delete(s.sessions, sessionID)
 		s.sessionsMu.Unlock()
 		close(eventChan)
-		verboseLog("[MCP] SSE disconnected session=%s remote=%s", sessionID, r.RemoteAddr)
+		log.Printf("[INFO] [MCP] SSE disconnected session=%s remote=%s", sessionID, r.RemoteAddr)
 	}()
 
 	for {
@@ -997,7 +1175,7 @@ func (s *MCPServer) handleMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Parse error", http.StatusBadRequest)
 		return
 	}
-	verboseLog("[MCP] <- session=%s method=%s id=%v params=%s", sessionID, req.Method, req.ID, previewString(string(req.Params), 500))
+	log.Printf("[INFO] [MCP] <- session=%s method=%s id=%v params=%s", sessionID, req.Method, req.ID, previewString(string(req.Params), 500))
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusAccepted)
@@ -1017,7 +1195,7 @@ func (s *MCPServer) handleMessage(w http.ResponseWriter, r *http.Request) {
 				"version": "1.1.0",
 			},
 		}
-		verboseLog("[MCP] initialize session=%s client_id=%v", sessionID, req.ID)
+		log.Printf("[INFO] [MCP] initialize session=%s client_id=%v", sessionID, req.ID)
 		s.sendSessionResponse(sessionID, req.ID, result)
 
 	case "tools/list":
@@ -1029,7 +1207,7 @@ func (s *MCPServer) handleMessage(w http.ResponseWriter, r *http.Request) {
 				InputSchema: tool.InputSchema,
 			})
 		}
-		verboseLog("[MCP] tools/list session=%s tool_count=%d", sessionID, len(toolsList))
+		log.Printf("[INFO] [MCP] tools/list session=%s tool_count=%d", sessionID, len(toolsList))
 		s.sendSessionResponse(sessionID, req.ID, map[string]interface{}{"tools": toolsList})
 
 	case "tools/call":
@@ -1046,7 +1224,7 @@ func (s *MCPServer) handleMessage(w http.ResponseWriter, r *http.Request) {
 		}
 
 		start := time.Now()
-		verboseLog("[MCP] tool start session=%s name=%s args=%s", sessionID, params.Name, summarizeForLog(params.Arguments))
+		log.Printf("[INFO] [MCP] tool start session=%s name=%s args=%s", sessionID, params.Name, summarizeForLog(params.Arguments))
 		result, err := tool.Handler(params.Arguments)
 		if err != nil {
 			log.Printf("[ERROR] [MCP] tool error session=%s name=%s duration=%s err=%v", sessionID, params.Name, time.Since(start), err)
@@ -1054,15 +1232,15 @@ func (s *MCPServer) handleMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if tr, ok := result.(ToolResult); ok {
-			verboseLog("[MCP] tool done session=%s name=%s duration=%s is_error=%t result=%s", sessionID, params.Name, time.Since(start), tr.IsError, summarizeToolResult(tr))
+			log.Printf("[INFO] [MCP] tool done session=%s name=%s duration=%s is_error=%t result=%s", sessionID, params.Name, time.Since(start), tr.IsError, summarizeToolResult(tr))
 			s.sendSessionResponse(sessionID, req.ID, tr)
 		} else {
-			verboseLog("[MCP] tool done session=%s name=%s duration=%s result=%s", sessionID, params.Name, time.Since(start), summarizeForLog(result))
+			log.Printf("[INFO] [MCP] tool done session=%s name=%s duration=%s result=%s", sessionID, params.Name, time.Since(start), summarizeForLog(result))
 			s.sendSessionResponse(sessionID, req.ID, result)
 		}
 
 	default:
-		verboseLog("[MCP] unsupported method session=%s method=%s id=%v", sessionID, req.Method, req.ID)
+		log.Printf("[INFO] [MCP] unsupported method session=%s method=%s id=%v", sessionID, req.Method, req.ID)
 		if req.ID != nil {
 			s.sendSessionResponse(sessionID, req.ID, nil)
 		}
@@ -1075,7 +1253,7 @@ func (s *MCPServer) sendSessionResponse(sessionID string, id interface{}, result
 		ID:      id,
 		Result:  result,
 	}
-	verboseLog("[MCP] -> session=%s id=%v result=%s", sessionID, id, summarizeForLog(result))
+	log.Printf("[INFO] [MCP] -> session=%s id=%v result=%s", sessionID, id, summarizeForLog(result))
 	s.enqueueSessionMessage(sessionID, resp)
 }
 
@@ -1214,12 +1392,15 @@ func toolGetOrientation(args map[string]interface{}) (interface{}, error) {
 }
 
 func toolGetScreenshot(args map[string]interface{}) (interface{}, error) {
-	img, err := wd.Screenshot()
+	img, source, err := wd.screenshotWithSource()
 	if err != nil {
 		return errorResult(fmt.Errorf("screenshot failed: %w", err)), nil
 	}
 	return ToolResult{
-		Content: []ContentBlock{{Type: "image", Data: base64.StdEncoding.EncodeToString(img), MimeType: "image/png"}},
+		Content: []ContentBlock{
+			{Type: "image", Data: base64.StdEncoding.EncodeToString(img), MimeType: "image/png"},
+			{Type: "text", Text: fmt.Sprintf("screenshot_source=%s", source)},
+		},
 	}, nil
 }
 
@@ -1795,6 +1976,27 @@ func parseJSONObject(raw json.RawMessage) (map[string]interface{}, error) {
 		return nil, err
 	}
 	return value, nil
+}
+
+func mapInt(value map[string]interface{}, key string) (int, bool) {
+	raw, ok := value[key]
+	if !ok {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
+	}
 }
 
 func extractElementID(raw json.RawMessage) string {

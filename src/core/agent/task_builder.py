@@ -7,6 +7,7 @@ from ..types import (
     ElementCacheFeature, ExecutionTaskHitBy, Rect, LocateCache
 )
 from ..uitree.debug import capture_debug_tree
+from ..uitree.dump import build_debug_prefix
 from ..uitree.service import uitree_manager
 from .conversation_history import ConversationHistory
 from common.config import settings
@@ -112,6 +113,24 @@ class TaskBuilder:
             element_ref=cls._serialize_element_ref(getattr(matched_node, "element_ref", None)),
             locator_candidates=cls._serialize_locator_candidates(getattr(matched_node, "locator_candidates", None)),
         )
+
+    @staticmethod
+    def _stringify_prompt(prompt: Any) -> str:
+        if isinstance(prompt, str):
+            return prompt.strip()
+        if prompt is None:
+            return ""
+        return str(prompt).strip()
+
+    @classmethod
+    def _extract_prompt_from_locate_param(cls, locate_param: Any) -> str:
+        if isinstance(locate_param, DetailedLocateParam):
+            return cls._stringify_prompt(locate_param.prompt)
+        if isinstance(locate_param, dict):
+            return cls._stringify_prompt(locate_param.get("prompt"))
+        if isinstance(locate_param, str):
+            return locate_param.strip()
+        return cls._stringify_prompt(locate_param)
 
     def _refresh_action_target(
         self,
@@ -297,6 +316,7 @@ class TaskBuilder:
         task = ExecutionTaskApply(
             type="Action Space",
             sub_type="Finished",
+            title="Finished",
             param=None,
             thought=plan.thought,
         )
@@ -317,6 +337,7 @@ class TaskBuilder:
         """Handle an action plan (Tap, Input, Scroll, etc.)"""
         plan_type = plan.type
         param = plan.param if isinstance(plan.param, dict) else {}
+        task_title = ""
         
         # Find matching action in action space
         action = None
@@ -335,6 +356,7 @@ class TaskBuilder:
         # Process locate fields
         for field in locate_fields:
             if param.get(field):
+                task_title = task_title or self._extract_prompt_from_locate_param(param[field])
                 locate_plan = locate_plan_for_locate(param[field])
                 logger.debug(
                     f"will prepend locate param for field action.type={plan_type} "
@@ -351,6 +373,7 @@ class TaskBuilder:
         task = ExecutionTaskApply(
             type="Action Space",
             sub_type=plan_type,
+            title=task_title or plan_type,
             thought=plan.thought,
             param=param,
         )
@@ -402,6 +425,7 @@ class TaskBuilder:
         task = ExecutionTaskPlanningLocateApply(
             type="Planning",
             sub_type="Locate",
+            title=self._extract_prompt_from_locate_param(locate_param),
             param=locate_param.model_dump() if hasattr(locate_param, 'model_dump') else locate_param,
             thought=plan.thought,
         )
@@ -450,11 +474,20 @@ class TaskBuilder:
                         else str(locate_param_obj.prompt)
                     )
                     raw_tree = self.device.get_dom_tree()
+                    save_dir = None
+                    screenshot_dir_resolver = getattr(self.device, "_pymidscene_report_screenshot_dir_resolver", None)
+                    if callable(screenshot_dir_resolver):
+                        try:
+                            save_dir = screenshot_dir_resolver()
+                        except Exception as e:
+                            logger.debug(f"resolve report screenshot dir failed: {e}")
                     capture_debug_tree(
                         self.device,
                         prompt_text,
                         raw_tree=raw_tree,
                         device_type=device_type,
+                        save_dir=save_dir,
+                        prefix=build_debug_prefix(prompt_text),
                     )
                 except Exception as e:
                     logger.debug(f"capture_debug_tree error: {e}")

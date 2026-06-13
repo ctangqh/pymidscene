@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from common.config import settings
 from common.logger import logger
 
-from .dump import build_debug_prefix, dump_tree_bundle
+from .dump import dump_tree_bundle
 from .service import uitree_manager
 
 
@@ -17,6 +17,8 @@ def capture_debug_tree(
     raw_tree: Any = None,
     device_type: Optional[str] = None,
     save_dir: Optional[Path] = None,
+    screenshot_path: Optional[Path] = None,
+    prefix: Optional[str] = None,
 ) -> Dict[str, Optional[Path]]:
     """
     在 debug 模式下抓取并保存 UI tree。
@@ -38,7 +40,6 @@ def capture_debug_tree(
             return {"raw": None, "parsed": None}
 
         resolved_device_type = device_type or getattr(device, "interface_type", None)
-        prefix = build_debug_prefix(element_description)
         parsed_tree = uitree_manager.parse(raw_tree, resolved_device_type)
         result = dump_tree_bundle(
             raw_tree,
@@ -47,6 +48,7 @@ def capture_debug_tree(
             tree=parsed_tree,
             prefix=prefix,
             device_type=resolved_device_type,
+            screenshot_path=screenshot_path,
         )
 
         logger.info(

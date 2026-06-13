@@ -45,14 +45,29 @@ class ExtractResult(BaseModel):
 class ElementLocator:
     """智能元素定位引擎"""
     
-    def __init__(self, device: BaseDevice, llm: BaseLLM, vision_model=None):
+    def __init__(self, device: BaseDevice, llm: BaseLLM, vision_model=None, screenshot_dir_resolver=None):
         self.device = device
         self.llm = llm
         self.vision_model = vision_model
+        self.screenshot_dir_resolver = screenshot_dir_resolver
         self.model_runtime = vision_model or llm
         self.confidence_threshold = settings.LOCATE_CONFIDENCE_THRESHOLD
         self.service = Service(lambda: self._build_context(), llm=self.model_runtime)
         self.last_result: Optional[LocateResult] = None
+
+    def _get_debug_screenshot_dir(self) -> Path:
+        resolver = self.screenshot_dir_resolver or getattr(self.device, "_pymidscene_report_screenshot_dir_resolver", None)
+        if callable(resolver):
+            try:
+                save_dir = resolver()
+                if isinstance(save_dir, Path):
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    return save_dir
+            except Exception as e:
+                logger.debug(f"获取定位调试截图目录失败，回退到默认目录: {e}")
+        save_dir = settings.report_screenshot_dir
+        save_dir.mkdir(parents=True, exist_ok=True)
+        return save_dir
     
     def _run_async(self, coro):
         try:
@@ -117,6 +132,7 @@ class ElementLocator:
         
         try:
             from common.image import save_debug_screenshot, format_box_label
+            from core.uitree import capture_debug_tree
             
             screenshot_b64 = self.device.screenshot_base64()
             if not screenshot_b64:
@@ -136,8 +152,24 @@ class ElementLocator:
                 screenshot_b64,
                 safe_name,
                 annotations=[{"rect": bbox, "label": label}],
-                save_raw=True
+                save_raw=True,
+                save_dir=self._get_debug_screenshot_dir(),
             )
+            raw_tree = None
+            try:
+                raw_tree = self.device.get_dom_tree()
+            except Exception as inner_exc:
+                logger.debug(f"获取 UITree 原始数据失败: {inner_exc}")
+
+            if raw_tree is not None:
+                capture_debug_tree(
+                    self.device,
+                    element_description,
+                    raw_tree=raw_tree,
+                    device_type=getattr(self.device, "interface_type", None),
+                    save_dir=paths.get("raw").parent if paths.get("raw") else None,
+                    screenshot_path=paths.get("raw"),
+                )
             logger.debug(f"定位调试截图已保存: raw={paths.get('raw')}, annotated={paths.get('annotated')}")
         except Exception as e:
             logger.warning(f"保存定位调试截图失败: {e}")

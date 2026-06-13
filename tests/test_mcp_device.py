@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from device.mcp.client import BaseMcpDevice, McpPlaywrightDevice, McpWinAppDevice
 
 
@@ -36,6 +38,22 @@ class _StubWinAppDevice(McpWinAppDevice):
         if tool_name == "winapp_find_element":
             return _text_result("element-123")
         return _text_result("ok")
+
+
+class _StubScreenshotErrorDevice(BaseMcpDevice):
+    @property
+    def interface_type(self) -> str:
+        return "generic"
+
+    def __init__(self):
+        super().__init__(mcp_name=None)
+        self._tool_map = {"screenshot": {"tool": "fake_screenshot"}}
+
+    def _submit(self, coro, timeout=None):
+        return asyncio.run(coro)
+
+    async def _call_mcp(self, tool_name: str, arguments):
+        return _text_result("ERROR: screenshot failed: WinAppDriver HTTP 400: {}")
 
 
 def test_base_mcp_device_resolve_selector_ref_returns_selector():
@@ -135,11 +153,23 @@ def test_winapp_click_uses_resolved_element_id():
     )
 
 
+def test_mcp_screenshot_error_text_is_not_decoded_as_base64():
+    device = _StubScreenshotErrorDevice()
+
+    with pytest.raises(Exception) as exc:
+        device.screenshot()
+
+    message = str(exc.value)
+    assert "ERROR: screenshot failed: WinAppDriver HTTP 400" in message
+    assert "Failed to decode screenshot" not in message
+
+
 def run_all_mcp_device_checks():
     test_base_mcp_device_resolve_selector_ref_returns_selector()
     test_playwright_resolve_selector_ref_keeps_selector_semantics()
     test_winapp_resolve_selector_ref_returns_runtime_handle()
     test_winapp_click_uses_resolved_element_id()
+    test_mcp_screenshot_error_text_is_not_decoded_as_base64()
 
 
 if __name__ == "__main__":

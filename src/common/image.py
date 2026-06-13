@@ -68,20 +68,24 @@ def format_box_label(rect: Any, el_type: str = "element") -> str:
     return f"{(el_type or 'element').capitalize()}, [{int(left)},{int(top)},{int(right)},{int(bottom)}]"
 
 
-def get_screenshot_save_dir() -> Path:
+def get_screenshot_save_dir(save_dir: Optional[Path] = None) -> Path:
     """
     获取截图保存目录
     
     Returns:
         截图保存目录的 Path 对象
     """
-    save_dir = Path(settings.REPORT_SCREENSHOT_SAVE_DIR)
+    save_dir = save_dir or settings.report_screenshot_dir
     save_dir.mkdir(parents=True, exist_ok=True)
     return save_dir
 
 
-def save_raw_screenshot(screenshot_base64: str, filename: Optional[str] = None, 
-                       is_debug: bool = False) -> Path:
+def save_raw_screenshot(
+    screenshot_base64: str,
+    filename: Optional[str] = None,
+    is_debug: bool = False,
+    save_dir: Optional[Path] = None,
+) -> Path:
     """
     保存原始截图
     
@@ -96,7 +100,7 @@ def save_raw_screenshot(screenshot_base64: str, filename: Optional[str] = None,
     if not screenshot_base64:
         raise ValueError("screenshot_base64 is empty")
     
-    save_dir = get_screenshot_save_dir()
+    save_dir = get_screenshot_save_dir(save_dir)
     
     if not filename:
         timestamp = int(time.time() * 1000)
@@ -193,7 +197,8 @@ def save_debug_screenshot(
     screenshot_base64: str,
     filename_prefix: str,
     annotations: Optional[List[Dict[str, Any]]] = None,
-    save_raw: bool = True
+    save_raw: bool = True,
+    save_dir: Optional[Path] = None,
 ) -> Dict[str, Path]:
     """
     保存调试截图（包括原始和标注版本）
@@ -209,17 +214,17 @@ def save_debug_screenshot(
     """
     result = {}
     timestamp = int(time.time() * 1000)
-    save_dir = get_screenshot_save_dir()
+    save_dir = get_screenshot_save_dir(save_dir)
     
     # 保存原始截图
     if save_raw:
-        raw_filename = f"{filename_prefix}_{timestamp}_raw_debug.png"
-        raw_path = save_raw_screenshot(screenshot_base64, raw_filename, is_debug=True)
+        raw_filename = f"{filename_prefix}_{timestamp}_raw.png"
+        raw_path = save_raw_screenshot(screenshot_base64, raw_filename, is_debug=True, save_dir=save_dir)
         result['raw'] = raw_path
     
     # 保存标注截图
     if annotations:
-        ann_filename = f"{filename_prefix}_{timestamp}_annotated_debug.png"
+        ann_filename = f"{filename_prefix}_{timestamp}_debug.png"
         ann_path = save_dir / ann_filename
         annotate_screenshot(screenshot_base64, annotations, str(ann_path))
         result['annotated'] = ann_path

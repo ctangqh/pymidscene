@@ -82,6 +82,10 @@ class Agent:
         self.opts = opts or AgentOpt()
         
         self.device = device
+        try:
+            setattr(self.device, "_pymidscene_report_screenshot_dir_resolver", self._get_report_screenshot_dir)
+        except Exception:
+            pass
         
         if llm is not None:
             self.llm = llm
@@ -190,6 +194,14 @@ class Agent:
         except ImportError:
             logger.debug("TaskExecutor not yet available, will initialize later")
             self.task_executor = None
+
+    def _get_report_screenshot_dir(self) -> Path:
+        report_path = getattr(self._report_generator, "_report_path", None)
+        if report_path:
+            screenshot_dir = Path(report_path).parent / "screenshots"
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            return screenshot_dir
+        return settings.report_screenshot_dir
     
     async def _on_task_update(self, runner, error=None):
         """Called when a task is updated"""
@@ -262,7 +274,7 @@ class Agent:
                         # Get current UI context for screenshot
                         context = await self.get_ui_context()
                         if context and context.screenshot:
-                            debug_dir = get_screenshot_save_dir()
+                            debug_dir = get_screenshot_save_dir(self._get_report_screenshot_dir())
                             
                             # 文件名添加 _debug 后缀
                             filename = f"debug_{task_id}_{int(time.time())}_debug.png"
@@ -884,7 +896,15 @@ class Agent:
             else (self.device.screenshot_base64() if hasattr(self.device, 'screenshot_base64') else None)
         )
         now = time.time()
-        screenshot = ScreenshotItem.create(base64_data or "", now)
+        preferred_filename = (
+            opt.get("filename")
+            or opt.get("screenshot_filename")
+            or opt.get("preferred_filename")
+        )
+        screenshot_path = opt.get("screenshot_path")
+        if not preferred_filename and isinstance(screenshot_path, str) and screenshot_path.strip():
+            preferred_filename = Path(screenshot_path).name
+        screenshot = ScreenshotItem.create(base64_data or "", now, filename=preferred_filename)
         
         execution_dump = ExecutionDump(
             id=str(uuid.uuid4()),

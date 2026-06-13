@@ -126,6 +126,7 @@ capture_debug_tree(
     device=device,
     element_description="设置按钮",
     device_type=getattr(device, "interface_type", None),
+    screenshot_path=raw_screenshot_path,
 )
 ```
 
@@ -134,6 +135,7 @@ capture_debug_tree(
 - 仅在 `settings.DEBUG` 为 `True` 时真正落盘
 - 内部兜底，不把调试失败向外抛出
 - 适合 `agent`、`task_builder`、`locator` 这类核心链路
+- 如果传入 `screenshot_path`，会优先与该截图做严格同 basename 绑定
 
 对调用方的建议
 --------------
@@ -195,10 +197,17 @@ capture_debug_tree(...)
 
 当前 UITree 调试输出统一为两类 JSON 文件：
 
-- `*_uitree_debug.json`
-- `*_uitree_parsed_debug.json`
+- `<screenshot_name>.json`
+- `<screenshot_name>_raw.json`
 
-### 1. `*_uitree_debug.json`
+命名规则：
+
+- 如果当前 `report/**/screenshots` 目录中存在最近生成的截图文件，`parsed` 结果会直接复用该截图文件名，只把后缀改成 `.json`
+- 同一次保存的 `raw` 结果会使用同样的 basename，并追加 `_raw.json`
+- 如果调用方显式传入 `screenshot_path`，则优先使用该路径的 basename，而不是推断最近截图
+- 如果当前没有可对齐的截图文件，则回退到时间戳前缀命名
+
+### 1. `<screenshot_name>_raw.json`
 
 该文件保存“归一化后的原始树结构”。
 
@@ -259,7 +268,7 @@ capture_debug_tree(...)
 - 如果设备原始返回是 JSON 字符串，也会先解析再落盘
 - 常见包装壳如 `content`、`xml`、`value`、`source` 会被自动剥离
 
-### 2. `*_uitree_parsed_debug.json`
+### 2. `<screenshot_name>.json`
 
 该文件保存“统一领域模型后的结果”，用于后续模块直接消费。
 
@@ -362,8 +371,8 @@ capture_debug_tree(...)
 
 如果其他模块要读取调试产物，建议优先级如下：
 
-1. 优先读取 `*_uitree_parsed_debug.json`
-2. 仅在需要分析设备原始返回差异时，再读取 `*_uitree_debug.json`
+1. 优先读取与截图同名的 `.json`
+2. 仅在需要分析设备原始返回差异时，再读取同 basename 的 `_raw.json`
 
 原因是：
 

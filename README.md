@@ -33,11 +33,19 @@ uv run playwright install chromium --with-deps
 ```
 
 ### 配置
-复制环境变量模板，填入你的 API 密钥：
+复制环境变量模板，并准备运行配置文件：
 ```bash
-cp deploy/.env.example .env
-# 编辑 .env 文件，填入 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 等配置
+copy .env.sample .env
+# 编辑 .env，填入 LLM_API_KEY / LLM_BASE_URL 等敏感配置
+# 编辑 app.yaml，填写模型标识、设备参数、报告目录、MCP 地址等运行配置
 ```
+
+`.env` 与 `app.yaml` 的职责划分如下：
+
+- `.env`：保存 API Key、模型接口地址、MCP 认证密钥等敏感信息
+- `app.yaml`：保存模型标识、设备参数、报告路径、MCP 服务地址等非敏感运行配置
+- 多个 MCP 共用同一个认证密钥时，可配置 `MCP_API_KEY`
+- 某个 MCP 需要单独认证时，可配置对应的 `MCP_<NAME>_API_KEY`，例如 `MCP_WINAPP_API_KEY`
 
 ### 基础使用（本地浏览器模式）
 ```python
@@ -78,6 +86,28 @@ with device:
     device.screenshot(save_path="./baidu.png")
 ```
 
+### 截图命名规则
+使用 SDK 的 `ms.screenshot()` 时，截图默认保存在当前 report 对应的 `screenshots/` 目录。
+
+```python
+# 指定文件名时，按给定名称保存
+ms.screenshot("02_text_entered.png")
+
+# 不指定文件名时，自动生成 screenshot_<timestamp>.png
+ms.screenshot()
+```
+
+如果当前没有 report 上下文，则会回退到默认截图目录：
+
+- `REPORT_SAVE_DIR/screenshots`
+- 默认路径通常是 `output/reports/screenshots`
+
+report 自动记录链路的命名规则与此保持一致：
+
+- 如果传入业务文件名，优先保留该名称写入 `report/**/screenshots/`
+- 如果同名但图片内容不同，自动补后缀，例如 `same_name.png`、`same_name_2.png`
+- 如果没有业务文件名，则回退到系统生成的稳定名称
+
 ### 运行 YAML 流程
 ```yaml
 # search_demo.yaml
@@ -106,8 +136,8 @@ client.run_yaml("search_demo.yaml")
 ### 开发环境
 ```bash
 cd deploy
-cp .env.example .env
-# 编辑 .env 填入配置
+copy ..\.env.sample ..\.env
+# 编辑 ..\.env 与 ..\app.yaml 填入配置
 docker compose -f docker-compose.dev.yml up -d
 
 # 进入容器开发

@@ -1,0 +1,107 @@
+# DEBUG: 是否开启全局调试模式。true 时输出更多调试日志和调试产物。
+DEBUG: false
+
+# LOG_LEVEL: 日志输出级别。常用值为 DEBUG、INFO、WARNING、ERROR。
+LOG_LEVEL: INFO
+
+# DEFAULT_DEVICE_PROVIDER: 默认设备实现。create_client() 未显式指定时使用该设备端。
+DEFAULT_DEVICE_PROVIDER: mcp_playwright
+
+# DEFAULT_MCP_NAME: 默认 MCP 实例名称。该值需与 MCP_SERVERS 下的 key 对应。
+DEFAULT_MCP_NAME: playwright
+
+# LLM_MODEL: 通用 LLM 模型标识。推荐使用 provider/model 格式，例如 openai/gpt-4o。
+LLM_MODEL: openai/Doubao-Seed-2.0-pro
+
+# VISION_MODEL: 独立视觉模型标识。可写 model 或 provider/model；留空时复用 LLM_MODEL。
+VISION_MODEL:
+
+# DEFAULT_OCR_PROVIDER: 默认 OCR 引擎。
+DEFAULT_OCR_PROVIDER: paddleocr
+
+# MODEL_TIMEOUT: 模型请求超时时间，单位秒。
+MODEL_TIMEOUT: 60
+
+# MODEL_MAX_RETRIES: 模型请求最大重试次数。
+MODEL_MAX_RETRIES: 3
+
+# DEVICE_HEADLESS: 浏览器或设备是否以无头模式运行。
+DEVICE_HEADLESS: false
+
+# DEVICE_TIMEOUT: 设备动作超时时间，单位毫秒。
+DEVICE_TIMEOUT: 30000
+
+# DEVICE_VIEWPORT_WIDTH: 设备默认视口宽度，单位像素。
+DEVICE_VIEWPORT_WIDTH: 1920
+
+# DEVICE_VIEWPORT_HEIGHT: 设备默认视口高度，单位像素。
+DEVICE_VIEWPORT_HEIGHT: 1080
+
+# DEVICE_USER_AGENT: 设备默认 User-Agent。
+DEVICE_USER_AGENT: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36
+
+# LOCATE_CONFIDENCE_THRESHOLD: 元素定位置信度阈值。值越高越严格。
+LOCATE_CONFIDENCE_THRESHOLD: 0.7
+
+# LOCATE_MAX_RETRIES: 元素定位失败后的最大重试次数。
+LOCATE_MAX_RETRIES: 2
+
+# LOCATE_USE_VISION: 元素定位时是否允许走视觉兜底。
+LOCATE_USE_VISION: true
+
+# ANOMALY_GUARD_ENABLED: 是否启用异常弹窗检测与处理。
+ANOMALY_GUARD_ENABLED: true
+
+# ANOMALY_DETECT_CONFIDENCE_THRESHOLD: 异常弹窗检测置信度阈值。
+ANOMALY_DETECT_CONFIDENCE_THRESHOLD: 0.7
+
+# ANOMALY_DEBUG_SAVE_DIR: 异常检测调试产物输出目录。
+ANOMALY_DEBUG_SAVE_DIR: ./output/anomaly_debug
+
+# REPORT_SAVE_DIR: 报告输出根目录。截图默认保存到该目录下的 screenshots 子目录。
+REPORT_SAVE_DIR: ./output/reports
+
+# REPORT_AUTO_SAVE: 是否在执行后自动生成并保存报告。
+REPORT_AUTO_SAVE: true
+
+# LOG_FILE: 主日志文件路径。debug 日志文件会自动派生为同目录下的 *_debug.log。
+LOG_FILE: ./logs/run.log
+
+# MCP_TIMEOUT: MCP 请求默认超时时间，单位秒。
+MCP_TIMEOUT: 60
+
+# WINAPPDRIVER_APP: WinAppDriver 启动时可选的目标应用路径或应用标识。留空表示不预设。
+WINAPPDRIVER_APP:
+
+# MCP_SERVERS: MCP 服务实例配置。
+MCP_SERVERS:
+  # playwright: Playwright MCP 实例配置。
+  playwright:
+    # url: Playwright MCP 服务地址。
+    url: http://127.0.0.1:55000/sse
+    # transport: Playwright MCP 传输方式。当前通常为 sse。
+    transport: sse
+  # winapp: WinApp MCP 实例配置。
+  winapp:
+    # url: WinApp MCP 服务地址。
+    url: http://127.0.0.1:55001/sse
+    # transport: WinApp MCP 传输方式。当前通常为 sse。
+    transport: sse
+  # hypium: Hypium MCP 实例配置。
+  hypium:
+    # url: Hypium MCP 服务地址。
+    url: http://127.0.0.1:55002/sse
+    # transport: Hypium MCP 传输方式。当前通常为 sse。
+    transport: sse
+  # android: Android MCP 实例配置。
+  android:
+    # url: Android MCP 服务地址。
+    url: http://127.0.0.1:55003/sse
+    # transport: Android MCP 传输方式。当前通常为 sse。
+    transport: sse
+  # ios: iOS MCP 实例配置。
+  ios:
+    # url: iOS MCP 服务地址。
+    url: http://127.0.0.1:55004/sse
+    # transport: iOS MCP 传输方式。当前通常为 sse。
+    transport: sse

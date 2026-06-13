@@ -40,9 +40,9 @@ def setup_logger(log_level: Optional[str] = None, log_file: Optional[str] = None
     
     # 默认使用配置的日志文件路径，debug 模式用不同的文件
     if log_file is None:
-        if debug and hasattr(settings, 'LOG_FILE_DEBUG'):
+        if debug:
             log_file = settings.LOG_FILE_DEBUG
-        elif hasattr(settings, 'LOG_FILE'):
+        else:
             log_file = settings.LOG_FILE
     
     # 移除默认 handler

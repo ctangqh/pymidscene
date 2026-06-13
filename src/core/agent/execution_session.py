@@ -51,6 +51,7 @@ class TaskRunner:
                 task_id=str(uuid.uuid4()),
                 type=task_apply.type,
                 sub_type=task_apply.sub_type,
+                title=task_apply.title,
                 param=task_apply.param,
                 thought=task_apply.thought,
                 status=ExecutionTaskStatus.PENDING,

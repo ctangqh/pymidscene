@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -136,6 +137,24 @@ class ReportGenerator:
     def get_report_path(self) -> Optional[str]:
         return str(self._report_path) if self._report_path else None
 
+    def adopt_saved_screenshot(self, file_path: Path) -> None:
+        if self.output_format == "single-html":
+            return
+        if not self._meta:
+            return
+        old_rel, saved_ref = self._screenshot_store.register_saved_file(file_path)
+        new_rel = saved_ref.path
+        changed = False
+        if old_rel and old_rel != new_rel:
+            for execution in self._execution_by_id.values():
+                self._replace_screenshot_path(execution, old_rel, new_rel)
+                changed = True
+        if new_rel and self._adopt_recent_execution_screenshots(saved_ref.model_dump()):
+            changed = True
+        if changed:
+            self._cleanup_unreferenced_screenshot_files()
+            self._rewrite_report_outputs()
+
     async def _init_if_needed(self) -> None:
         if self._initialized and self.reuse_existing_report:
             return
@@ -192,9 +211,17 @@ class ReportGenerator:
             if isinstance(ui_context, dict):
                 base64_data = ui_context.get("screenshot_base64") or ui_context.get("screenshot")
                 if isinstance(base64_data, str) and base64_data.strip():
-                    ref = self._screenshot_store.persist_base64(base64_data)
+                    preferred_filename = self._extract_preferred_screenshot_name(ui_context)
+                    ref = self._screenshot_store.persist_base64(
+                        base64_data,
+                        preferred_filename=preferred_filename,
+                    )
                     ui_context.pop("screenshot_base64", None)
                     ui_context.pop("screenshot", None)
+                    ui_context.pop("filename", None)
+                    ui_context.pop("preferred_filename", None)
+                    ui_context.pop("screenshot_filename", None)
+                    ui_context.pop("screenshot_path", None)
                     ui_context["screenshot"] = ref.model_dump()
 
         recorder = task.get("recorder")
@@ -208,7 +235,123 @@ class ReportGenerator:
                 base64_data = shot.get("base64_data") or shot.get("screenshot_base64")
                 if isinstance(base64_data, str) and base64_data.strip():
                     captured_at = shot.get("captured_at")
-                    ref = self._screenshot_store.persist_base64(base64_data, captured_at=captured_at)
+                    preferred_filename = self._extract_preferred_screenshot_name(shot)
+                    ref = self._screenshot_store.persist_base64(
+                        base64_data,
+                        captured_at=captured_at,
+                        preferred_filename=preferred_filename,
+                    )
                     shot.pop("base64_data", None)
                     shot.pop("screenshot_base64", None)
+                    shot.pop("filename", None)
+                    shot.pop("preferred_filename", None)
+                    shot.pop("screenshot_filename", None)
+                    shot.pop("screenshot_path", None)
                     shot.update(ref.model_dump())
+
+    @staticmethod
+    def _extract_preferred_screenshot_name(payload: Dict[str, Any]) -> Optional[str]:
+        for key in ("filename", "preferred_filename", "screenshot_filename", "screenshot_path", "path"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return Path(value).name
+        return None
+
+    def _rewrite_report_outputs(self) -> None:
+        if not self._meta:
+            return
+
+        executions = list(self._execution_by_id.values())
+        write_report_json(self._report_path, self._meta, executions)
+
+        html = report_html_template(self.report_file_name)
+        for execution in executions:
+            html = insert_dump_into_html(
+                html,
+                {"meta": self._meta.model_dump(), "executions": [execution]},
+            )
+        self._report_path.write_text(html, encoding="utf-8")
+
+        if self.persist_execution_dump:
+            for index, execution in enumerate(executions, start=1):
+                write_execution_json(
+                    self._report_path,
+                    index,
+                    {"meta": self._meta.model_dump(), "execution": execution},
+                )
+
+    def _adopt_recent_execution_screenshots(self, saved_ref: Dict[str, Any]) -> bool:
+        latest_execution = next(reversed(self._execution_by_id.values()), None)
+        if not isinstance(latest_execution, dict):
+            return False
+
+        changed = False
+        for screenshot in self._iter_screenshot_refs(latest_execution):
+            path = screenshot.get("path")
+            if not isinstance(path, str) or not self._is_auto_screenshot_path(path):
+                continue
+            captured_at = screenshot.get("captured_at", saved_ref.get("captured_at"))
+            screenshot.clear()
+            screenshot.update(saved_ref)
+            screenshot["captured_at"] = captured_at
+            changed = True
+        return changed
+
+    def _cleanup_unreferenced_screenshot_files(self) -> None:
+        screenshot_dir = self._report_path.parent / "screenshots"
+        if not screenshot_dir.exists():
+            return
+
+        referenced = set()
+        for execution in self._execution_by_id.values():
+            for screenshot in self._iter_screenshot_refs(execution):
+                path = screenshot.get("path")
+                if isinstance(path, str) and path.strip():
+                    referenced.add(Path(path).name)
+
+        for file_path in screenshot_dir.iterdir():
+            if not file_path.is_file():
+                continue
+            if file_path.name in referenced:
+                continue
+            if self._is_auto_screenshot_filename(file_path.name):
+                file_path.unlink()
+
+    @classmethod
+    def _replace_screenshot_path(cls, value: Any, old_rel: str, new_rel: str) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "path" and item == old_rel:
+                    value[key] = new_rel
+                    continue
+                cls._replace_screenshot_path(item, old_rel, new_rel)
+            return
+        if isinstance(value, list):
+            for item in value:
+                cls._replace_screenshot_path(item, old_rel, new_rel)
+
+    @classmethod
+    def _iter_screenshot_refs(cls, value: Any) -> List[Dict[str, Any]]:
+        refs: List[Dict[str, Any]] = []
+        cls._collect_screenshot_refs(value, refs)
+        return refs
+
+    @classmethod
+    def _collect_screenshot_refs(cls, value: Any, refs: List[Dict[str, Any]]) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "pymidscene_screenshot_ref":
+                refs.append(value)
+            for item in value.values():
+                cls._collect_screenshot_refs(item, refs)
+            return
+        if isinstance(value, list):
+            for item in value:
+                cls._collect_screenshot_refs(item, refs)
+
+    @staticmethod
+    def _is_auto_screenshot_path(path: str) -> bool:
+        return ReportGenerator._is_auto_screenshot_filename(Path(path).name)
+
+    @staticmethod
+    def _is_auto_screenshot_filename(name: str) -> bool:
+        return bool(re.fullmatch(r"[0-9a-f]{16,40}\.(png|jpe?g)", name, re.IGNORECASE))

@@ -15,6 +15,8 @@ from .models import UIElement
 from .normalize import extract_jsonable_payload, flatten_tree
 
 UITREE_SCHEMA_VERSION = "1.0.0"
+SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+RECENT_SCREENSHOT_WINDOW_SECONDS = 30.0
 
 
 def _build_execution_notes(element_ref: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -29,7 +31,7 @@ def _build_execution_notes(element_ref: Optional[Dict[str, Any]]) -> Dict[str, A
 
 
 def _resolve_save_dir(save_dir: Optional[Path] = None) -> Path:
-    target_dir = save_dir or Path(settings.REPORT_SCREENSHOT_SAVE_DIR)
+    target_dir = save_dir or settings.report_screenshot_dir
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir
 
@@ -40,9 +42,52 @@ def build_debug_prefix(element_description: str) -> str:
     return f"{timestamp}_{safe_name}"
 
 
-def _build_debug_filename(element_description: str, suffix: str, prefix: Optional[str] = None) -> str:
-    filename_prefix = prefix or build_debug_prefix(element_description)
-    return f"{filename_prefix}_{suffix}.json"
+def _normalize_prefix(prefix: str) -> str:
+    return Path(prefix).stem or prefix
+
+
+def _find_recent_screenshot_stem(target_dir: Path) -> Optional[str]:
+    try:
+        now = time.time()
+        candidates = [
+            path
+            for path in target_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in SCREENSHOT_SUFFIXES
+        ]
+        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in candidates:
+            if now - path.stat().st_mtime <= RECENT_SCREENSHOT_WINDOW_SECONDS:
+                return path.stem
+    except Exception:
+        return None
+    return None
+
+
+def resolve_artifact_basename(
+    element_description: str,
+    target_dir: Path,
+    prefix: Optional[str] = None,
+    screenshot_path: Optional[Path] = None,
+) -> str:
+    if screenshot_path:
+        return screenshot_path.stem
+
+    if prefix:
+        return _normalize_prefix(prefix)
+
+    recent_screenshot_stem = _find_recent_screenshot_stem(target_dir)
+    if recent_screenshot_stem:
+        return recent_screenshot_stem
+
+    return build_debug_prefix(element_description)
+
+
+def _build_artifact_filename(base_name: str, *, variant: str) -> str:
+    if variant == "parsed":
+        return f"{base_name}.json"
+    if variant == "raw":
+        return f"{base_name}_raw.json"
+    raise ValueError(f"Unknown artifact variant: {variant}")
 
 
 def _json_default_serializer(value: Any):
@@ -63,10 +108,17 @@ def dump_raw_tree(
     save_dir: Optional[Path] = None,
     prefix: Optional[str] = None,
     device_type: Optional[str] = None,
+    screenshot_path: Optional[Path] = None,
 ) -> Optional[Path]:
     """保存原始 UI 树"""
     target_dir = _resolve_save_dir(save_dir)
-    filepath = target_dir / _build_debug_filename(element_description, "uitree_debug", prefix=prefix)
+    base_name = resolve_artifact_basename(
+        element_description,
+        target_dir,
+        prefix=prefix,
+        screenshot_path=screenshot_path,
+    )
+    filepath = target_dir / _build_artifact_filename(base_name, variant="raw")
 
     try:
         normalized_payload = extract_jsonable_payload(raw_data)
@@ -99,14 +151,17 @@ def dump_parsed_tree(
     save_dir: Optional[Path] = None,
     prefix: Optional[str] = None,
     device_type: Optional[str] = None,
+    screenshot_path: Optional[Path] = None,
 ) -> Optional[Path]:
     """保存解析后的平铺 UI 树"""
     target_dir = _resolve_save_dir(save_dir)
-    filepath = target_dir / _build_debug_filename(
+    base_name = resolve_artifact_basename(
         element_description,
-        "uitree_parsed_debug",
+        target_dir,
         prefix=prefix,
+        screenshot_path=screenshot_path,
     )
+    filepath = target_dir / _build_artifact_filename(base_name, variant="parsed")
 
     try:
         flat_list = flatten_tree(tree)
@@ -162,6 +217,7 @@ def dump_tree_bundle(
     tree: Optional[UIElement] = None,
     prefix: Optional[str] = None,
     device_type: Optional[str] = None,
+    screenshot_path: Optional[Path] = None,
 ) -> Dict[str, Optional[Path]]:
     """保存原始与解析后 UI 树"""
     result = {"raw": None, "parsed": None}
@@ -171,6 +227,7 @@ def dump_tree_bundle(
         save_dir,
         prefix=prefix,
         device_type=device_type,
+        screenshot_path=screenshot_path,
     )
     if tree:
         result["parsed"] = dump_parsed_tree(
@@ -179,5 +236,6 @@ def dump_tree_bundle(
             save_dir,
             prefix=prefix,
             device_type=device_type,
+            screenshot_path=screenshot_path,
         )
     return result

@@ -75,7 +75,7 @@ def main():
     print("\n[7] 关闭应用和设备")
     ms.close()
     
-    print("\n✅ 所有操作完成！截图已保存到 examples/screenshots/")
+    print("\n✅ 所有操作完成！截图已保存到当前 report 的 screenshots 目录。")
     print("=" * 60)
 
 

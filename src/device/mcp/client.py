@@ -236,7 +236,11 @@ class BaseMcpDevice(BaseDevice):
         args = mapper(**kwargs) if mapper else kwargs
         
         try:
-            return self._submit(self._call_mcp(tool_name, args))
+            result = self._submit(self._call_mcp(tool_name, args))
+            error_text = self._parse_tool_error(result)
+            if error_text:
+                raise DeviceError(error_text)
+            return result
         except Exception as e:
             raise ActionExecutionError(f"MCP action '{action_name}' (tool: {tool_name}) failed: {e}") from e
 
@@ -254,6 +258,15 @@ class BaseMcpDevice(BaseDevice):
         for part in result.content:
             if getattr(part, "type", "") == "image" or getattr(part, "data", None):
                 return getattr(part, "data", None) or getattr(part, "text", None)
+        return None
+
+    @classmethod
+    def _parse_tool_error(cls, result) -> Optional[str]:
+        text = cls._parse_text(result).strip()
+        if not text:
+            return None
+        if text.startswith("ERROR:"):
+            return text
         return None
 
     @staticmethod
@@ -318,13 +331,22 @@ class BaseMcpDevice(BaseDevice):
 
     def screenshot(self, save_path: Optional[Path] = None, full_page: bool = True) -> bytes:
         result = self._execute_mcp_action("screenshot", full_page=full_page)
-        b64 = self._parse_image_b64(result) or self._parse_text(result).strip()
+        error_text = self._parse_tool_error(result)
+        if error_text:
+            raise DeviceError(error_text)
+        image_b64 = self._parse_image_b64(result)
+        if image_b64:
+            b64 = image_b64.strip()
+        else:
+            b64 = self._parse_text(result).strip()
         if not b64:
             raise DeviceError("Screenshot tool returned empty data")
+        if b64.startswith("ERROR:"):
+            raise DeviceError(b64)
         try:
             # Pad base64 if needed
             padded = b64 + "=" * (4 - len(b64) % 4) if len(b64) % 4 else b64
-            img = base64.b64decode(padded)
+            img = base64.b64decode(padded, validate=True)
             if save_path and img:
                 p = Path(save_path)
                 p.parent.mkdir(parents=True, exist_ok=True)

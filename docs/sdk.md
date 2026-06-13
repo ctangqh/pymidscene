@@ -254,9 +254,10 @@ print(position)
 截图。
 
 **参数：**
-- `filename`: 文件名（可选，如 "my_screenshot.png"），不指定则自动生成
+- `filename`: 文件名（可选，如 "my_screenshot.png"），不指定则自动生成 `screenshot_<timestamp>.png`
   - 如果是绝对路径，直接使用
-  - 如果是相对路径，保存到配置中的 `REPORT_SCREENSHOT_SAVE_DIR`（默认 `./output/screenshots`）
+  - 如果是相对路径，优先保存到当前 report 对应的 `screenshots/` 子目录
+  - 如果当前没有 report 上下文，则回退到 `REPORT_SAVE_DIR/screenshots`
 - `**kwargs`: 其他参数
 
 **返回值：**
@@ -268,12 +269,18 @@ print(position)
 # 自动生成文件名
 ms.screenshot()
 
-# 指定文件名
-ms.screenshot("my_screenshot.png")
+# 指定文件名，按给定名称保存
+ms.screenshot("02_text_entered.png")
 
 # 指定绝对路径
 ms.screenshot("/path/to/screenshot.png")
 ```
+
+**与 report 自动记录的关系：**
+
+- 如果后续通过 report 自动记录链路写入截图，并显式传入 `filename`、`screenshot_filename`、`preferred_filename` 或 `screenshot_path`，report 下的 `screenshots/` 目录会优先保留该业务文件名
+- 如果业务文件名发生冲突且图片内容不同，系统会自动补后缀，例如 `same_name.png`、`same_name_2.png`
+- 如果没有提供业务文件名，report 自动记录链路会回退为系统生成的稳定名称
 
 #### keyboard_press(key_name: str, **kwargs)
 
@@ -315,7 +322,10 @@ print(result)
 启用调试模式（`debug=True`）后，SDK 会：
 - 打印操作的详细日志
 - 打印元素定位的 bbox（边界框）坐标
-- 保存带有 bbox 标注的调试截图（到 `output/visual_debug` 目录）
+- 保存带有 bbox 标注的调试截图到当前 report 对应的 `screenshots/` 目录
+- 如果调用 `ms.screenshot("name.png")`，则截图文件名会优先保留为指定名称
+- 如果调用 `ms.screenshot()`，则系统自动生成文件名
+- 如果截图经过 report 自动记录链路持久化，report 目录中的文件名也会优先沿用业务名称
 
 **示例：**
 
@@ -328,24 +338,45 @@ ms.ai_input("文本编辑区域", "调试测试")
 
 ## 配置
 
-### MCP 服务器配置
+### 运行配置
 
-在 `config/mcp-servers.example.yaml` 中定义 MCP 服务器配置，复制为 `config/mcp-servers.yaml` 并修改。
+项目使用两类配置文件：
+
+- `app.yaml`：保存非敏感运行配置，例如模型标识、设备参数、报告目录、MCP 服务地址
+- `.env`：保存敏感配置，例如 API Key、模型接口地址、MCP 认证密钥
 
 ### LLM 配置
 
-在 `.env` 文件中配置 LLM API 信息：
+在 `.env` 文件中配置模型接入信息：
 
 ```env
-LLM_PROVIDER=deepseek
 LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://api.deepseek.com/v1
-LLM_MODEL=deepseek-chat
-
-VISION_PROVIDER=deepseek
 VISION_API_KEY=your_api_key
 VISION_BASE_URL=https://api.deepseek.com/v1
-VISION_MODEL=deepseek-vl
+```
+
+在 `app.yaml` 中配置模型标识，推荐使用 `provider/model` 格式：
+
+```yaml
+LLM_MODEL: deepseek/deepseek-chat
+VISION_MODEL: deepseek/deepseek-vl
+```
+
+### MCP 认证配置
+
+如果多个 MCP 服务共用同一个认证密钥，可以在 `.env` 中配置：
+
+```env
+MCP_API_KEY=shared_api_key
+```
+
+如果某个 MCP 需要单独认证，可以配置按实例名区分的环境变量，优先级高于 `MCP_API_KEY`：
+
+```env
+MCP_PLAYWRIGHT_API_KEY=playwright_key
+MCP_WINAPP_API_KEY=winapp_key
+MCP_ANDROID_API_KEY=android_key
 ```
 
 ## 支持的设备
@@ -368,17 +399,31 @@ VISION_MODEL=deepseek-vl
 
 ```bash
 # 进入 MCP 服务器目录
-cd mcp_servers/winapp
+cd mcp_servers/winappdriver
 
 # 启动服务器
-python server.py
+go run .
 ```
 
 ### 调试模式下的截图保存在哪里？
 
-默认保存在 `output/visual_debug` 目录。
+默认优先保存在当前 report 对应的 `screenshots/` 目录，例如：
+
+- `output/reports/<report_name>/screenshots/`
+
+如果当前没有 report 上下文，则回退到：
+
+- `REPORT_SAVE_DIR/screenshots`
+- 默认路径是 `output/reports/screenshots`
+
+命名规则：
+
+- `ms.screenshot("02_text_entered.png")`：按指定文件名保存
+- `ms.screenshot()`：自动生成 `screenshot_<timestamp>.png`
+- report 自动记录截图且提供业务文件名时：优先保存为业务文件名
+- report 自动记录截图且文件名冲突时：自动补后缀，如 `02_text_entered_2.png`
+- report 自动记录截图且没有业务文件名时：回退到系统生成的稳定名称
 
 ### 如何查看定位日志？
 
 设置 `debug=True` 即可在控制台看到详细定位日志，包括 bbox 坐标和操作步骤。
-

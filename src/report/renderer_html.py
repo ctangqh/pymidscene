@@ -131,6 +131,70 @@ def report_html_template(title: str) -> str:
       if (!src) return '';
       return '<div class="shot"><button class="shot-btn" type="button" data-shot-src="' + esc(src) + '"><img src="' + src + '"/></button><div class="caption">' + esc(src) + '</div></div>';
     }}
+    function taskTitle(task) {{
+      if (!task || typeof task !== 'object') return 'Step';
+      if (typeof task.title === 'string' && task.title.trim()) return task.title.trim();
+      if (task.param && typeof task.param === 'object') {{
+        if (typeof task.param.prompt === 'string' && task.param.prompt.trim()) return task.param.prompt.trim();
+        const locate = task.param.locate;
+        if (locate && typeof locate === 'object') {{
+          if (typeof locate.prompt === 'string' && locate.prompt.trim()) return locate.prompt.trim();
+          if (typeof locate.description === 'string' && locate.description.trim()) return locate.description.trim();
+        }}
+      }}
+      if (task.output && task.output.element && typeof task.output.element.description === 'string' && task.output.element.description.trim()) {{
+        return task.output.element.description.trim();
+      }}
+      return task.sub_type || task.type || 'Step';
+    }}
+    function isTimelineHiddenTask(task) {{
+      if (!task || typeof task !== 'object') return true;
+      const type = String(task.type || '');
+      const subType = String(task.sub_type || '');
+      if (type === 'Planning' && subType === 'Plan') return true;
+      if (type === 'Action Space' && subType === 'Finished') return true;
+      return false;
+    }}
+    function aggregateStatus(tasks) {{
+      const all = Array.isArray(tasks) ? tasks : [];
+      const statuses = all.map(t => String((t && t.status) || '').toLowerCase());
+      if (statuses.some(s => s === 'failed' || s === 'error')) return 'failed';
+      if (statuses.some(s => s === 'running')) return 'running';
+      if (statuses.some(s => s === 'pending')) return 'pending';
+      return 'finished';
+    }}
+    function pickLeadTask(tasks) {{
+      const all = Array.isArray(tasks) ? tasks : [];
+      for (let i = all.length - 1; i >= 0; i--) {{
+        const task = all[i];
+        if (task && task.type !== 'Planning') return task;
+      }}
+      return all[all.length - 1] || null;
+    }}
+    function buildTimelineTasks(tasks) {{
+      const all = Array.isArray(tasks) ? tasks : [];
+      const timeline = [];
+      let current = null;
+      for (const task of all) {{
+        if (isTimelineHiddenTask(task)) continue;
+        const title = taskTitle(task);
+        if (!current || current.title !== title) {{
+          current = {{ title, tasks: [task] }};
+          timeline.push(current);
+        }} else {{
+          current.tasks.push(task);
+        }}
+      }}
+      return timeline.map(group => {{
+        const leadTask = pickLeadTask(group.tasks) || group.tasks[group.tasks.length - 1] || {{}};
+        return {{
+          title: group.title,
+          status: aggregateStatus(group.tasks),
+          task: leadTask,
+          tasks: group.tasks,
+        }};
+      }});
+    }}
     function getTaskScreenshot(task) {{
       const ui = task && task.log && task.log.ui_context;
       const uiScreenshot = ui && ui.screenshot;
@@ -180,7 +244,7 @@ def report_html_template(title: str) -> str:
       const heroChips = document.getElementById('hero-chips');
       const meta = data.meta || {{}};
       const executions = data.executions || [];
-      const tasks = executions.flatMap(ex => Array.isArray(ex.tasks) ? ex.tasks : []);
+      const tasks = executions.flatMap(ex => buildTimelineTasks(Array.isArray(ex.tasks) ? ex.tasks : []));
       const finishedCount = tasks.filter(t => String((t && t.status) || '').toLowerCase() === 'finished').length;
       const failedCount = tasks.filter(t => String((t && t.status) || '').toLowerCase() === 'failed').length;
       const screenshotCount = countScreenshots(executions);
@@ -206,23 +270,28 @@ def report_html_template(title: str) -> str:
       let html = '<div class="meta"><div>sdk: ' + esc(meta.sdk_version || '-') + '</div><div>report_version: ' + esc(meta.report_version || '-') + '</div><div>models: ' + esc(modelBriefs.length) + '</div></div>';
       for (const ex of executions) {{
         const exTasks = Array.isArray(ex.tasks) ? ex.tasks : [];
-        const exFinished = exTasks.filter(t => String((t && t.status) || '').toLowerCase() === 'finished').length;
-        const exFailed = exTasks.filter(t => String((t && t.status) || '').toLowerCase() === 'failed').length;
+        const timelineTasks = buildTimelineTasks(exTasks);
+        const exFinished = timelineTasks.filter(t => String((t && t.status) || '').toLowerCase() === 'finished').length;
+        const exFailed = timelineTasks.filter(t => String((t && t.status) || '').toLowerCase() === 'failed').length;
         html += '<div class="exec">';
         html += '<div class="exec-header"><div><h2>' + esc(ex.name || 'Unnamed Execution') + '</h2>';
         if (ex.description) html += '<div class="exec-desc">' + esc(ex.description) + '</div>';
         html += '</div><div class="exec-side"><div>id: <span class="mono">' + esc(ex.id || '-') + '</span></div><div>time: ' + esc(formatTs(ex.log_time)) + '</div></div></div>';
-        html += '<div class="exec-stats"><div class="exec-stat">steps: ' + exTasks.length + '</div><div class="exec-stat">finished: ' + exFinished + '</div><div class="exec-stat">failed: ' + exFailed + '</div></div>';
-        const tasks = exTasks;
+        html += '<div class="exec-stats"><div class="exec-stat">steps: ' + timelineTasks.length + '</div><div class="exec-stat">finished: ' + exFinished + '</div><div class="exec-stat">failed: ' + exFailed + '</div></div>';
+        const tasks = timelineTasks;
         for (let i = 0; i < tasks.length; i++) {{
-          const t = tasks[i] || {{}};
+          const item = tasks[i] || {{}};
+          const t = item.task || {{}};
           const screenshot = getTaskScreenshot(t);
           const screenshotPath = (screenshot && (screenshot.path || screenshot.data_url)) || '';
-          const collapsed = String((t.status || '')).toLowerCase() === 'finished' ? 'true' : 'false';
+          const collapsed = String((item.status || '')).toLowerCase() === 'finished' ? 'true' : 'false';
           html += '<div class="task" data-collapsed="' + collapsed + '">';
           html += '<div class="task-main">';
-          html += '<div class="task-head"><span class="step-no">#' + (i + 1) + '</span><span class="task-title">' + esc(t.sub_type || t.type || 'Step') + '</span><span class="status ' + statusClass(t.status) + '">' + esc(t.status || 'pending') + '</span><button class="toggle" type="button">' + (collapsed === 'true' ? 'Expand' : 'Collapse') + '</button></div>';
+          html += '<div class="task-head"><span class="step-no">#' + (i + 1) + '</span><span class="task-title">' + esc(item.title || taskTitle(t)) + '</span><span class="status ' + statusClass(item.status) + '">' + esc(item.status || 'pending') + '</span><button class="toggle" type="button">' + (collapsed === 'true' ? 'Expand' : 'Collapse') + '</button></div>';
           html += '<div class="task-body">';
+          if (Array.isArray(item.tasks) && item.tasks.length) {{
+            html += '<div class="small">actions: ' + esc(item.tasks.map(task => task && task.sub_type ? task.sub_type : (task && task.type ? task.type : 'Step')).join(' -> ')) + '</div>';
+          }}
           if (t.log && t.log.message) html += '<div class="small">' + esc(t.log.message) + '</div>';
           if (t.param) html += '<div class="kv">param: ' + esc(JSON.stringify(t.param)) + '</div>';
           if (t.log && t.log.anomaly) html += '<div class="kv">anomaly: ' + esc(JSON.stringify(t.log.anomaly)) + '</div>';

@@ -96,6 +96,7 @@ class ExecutionTask(BaseModel):
     task_id: str = ""
     type: str  # 'Planning', 'Action Space', 'Insight', 'Log'
     sub_type: str = ""
+    title: Optional[str] = None
     param: Any = None
     thought: Optional[str] = None
     status: ExecutionTaskStatus = ExecutionTaskStatus.PENDING
@@ -123,6 +124,7 @@ class ExecutionTaskApply(BaseModel):
 
     type: str
     sub_type: str = ""
+    title: Optional[str] = None
     param: Any = None
     thought: Optional[str] = None
 

@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import shutil
+from pathlib import Path
 from typing import Optional, Dict, Any
 from device import get_device, BaseDevice
 from llm import get_llm
@@ -45,7 +48,16 @@ class PyMidscene:
             logger.info("PyMidscene 调试模式已启用")
         
         # Legacy locator (we'll remove this later, but keep it just in case)
-        self.locator = ElementLocator(self.device, self.llm, self.vision_model)
+        self.locator = ElementLocator(
+            self.device,
+            self.llm,
+            self.vision_model,
+            screenshot_dir_resolver=self._get_report_screenshot_dir,
+        )
+        try:
+            setattr(self.device, "_pymidscene_report_screenshot_dir_resolver", self._get_report_screenshot_dir)
+        except Exception:
+            pass
         
         # Agent-based architecture (only mode now)
         self._agent: Optional[Agent] = None
@@ -53,6 +65,7 @@ class PyMidscene:
         
         self._launched = False
         self.context: Dict[str, Any] = {}
+        self._last_screenshot_saved_at: float = 0.0
         
         # Event loop management
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -90,6 +103,105 @@ class PyMidscene:
                 self._loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self._loop)
         return self._loop
+
+    def _get_report_screenshot_dir(self):
+        """优先使用当前 report 对应的 screenshots 目录。"""
+        try:
+            agent = self.agent
+            report_generator = getattr(agent, "_report_generator", None)
+            report_path = getattr(report_generator, "_report_path", None)
+            if report_path:
+                screenshot_dir = Path(report_path).parent / "screenshots"
+                screenshot_dir.mkdir(parents=True, exist_ok=True)
+                return screenshot_dir
+        except Exception as e:
+            logger.debug(f"获取 report screenshots 目录失败，回退到默认目录: {e}")
+
+        save_dir = settings.report_screenshot_dir
+        save_dir.mkdir(parents=True, exist_ok=True)
+        return save_dir
+
+    @staticmethod
+    def _sha1_file(path: Path) -> str:
+        return hashlib.sha1(path.read_bytes()).hexdigest()
+
+    def _sync_recent_debug_artifacts(self, save_path: Path) -> None:
+        try:
+            report_screenshot_dir = self._get_report_screenshot_dir()
+            report_screenshot_dir.mkdir(parents=True, exist_ok=True)
+            target_stem = save_path.stem
+            save_mtime = save_path.stat().st_mtime
+            lower_bound = self._last_screenshot_saved_at
+            upper_bound = save_mtime + 1.0
+            self._last_screenshot_saved_at = upper_bound
+
+            candidate_dirs = [report_screenshot_dir]
+            global_dir = settings.report_screenshot_dir
+            try:
+                if global_dir.resolve() != report_screenshot_dir.resolve():
+                    candidate_dirs.append(global_dir)
+            except Exception:
+                candidate_dirs.append(global_dir)
+
+            rename_rules = [
+                (lambda name: name.endswith("_debug.json"), f"{target_stem}_debug.json"),
+                (lambda name: name.endswith("_raw_debug.png"), f"{target_stem}_raw_debug.png"),
+                (
+                    lambda name: name.endswith("_debug.png") and not name.endswith("_raw_debug.png"),
+                    f"{target_stem}_debug.png",
+                ),
+                (lambda name: name.endswith("_raw.json"), f"{target_stem}_raw.json"),
+                (
+                    lambda name: name.endswith(".json")
+                    and not name.endswith("_raw.json")
+                    and not name.endswith("_debug.json"),
+                    f"{target_stem}.json",
+                ),
+            ]
+
+            for matcher, target_name in rename_rules:
+                candidate = self._find_recent_artifact(candidate_dirs, matcher, lower_bound, upper_bound)
+                if candidate:
+                    self._move_artifact(candidate, report_screenshot_dir / target_name)
+        except Exception as e:
+            logger.debug(f"同步最近调试产物失败，保留原文件: {e}")
+
+    @staticmethod
+    def _find_recent_artifact(candidate_dirs, matcher, lower_bound: float, upper_bound: float) -> Optional[Path]:
+        candidates = []
+        for directory in candidate_dirs:
+            if not directory.exists():
+                continue
+            for path in directory.iterdir():
+                if not path.is_file():
+                    continue
+                if not matcher(path.name):
+                    continue
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if lower_bound < mtime <= upper_bound:
+                    candidates.append((mtime, path))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _move_artifact(self, source: Path, target: Path) -> None:
+        if source == target:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            try:
+                if self._sha1_file(source) == self._sha1_file(target):
+                    if source != target:
+                        source.unlink()
+                    return
+            except Exception:
+                pass
+            target.unlink()
+        shutil.move(str(source), str(target))
 
     def _run_async(self, coro):
         loop = self._get_loop()
@@ -158,9 +270,19 @@ class PyMidscene:
             interface_type = getattr(self.device, "interface_type", "")
             if interface_type in ("web", "browser"):
                 logger.info(f"跳转到 URL: {target}")
-                UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
+                UIAnomalyGuard(
+                    self.device,
+                    llm=self.llm,
+                    vision_llm=self.vision_model or self.llm,
+                    screenshot_dir_resolver=self._get_report_screenshot_dir,
+                ).handle_sync("goto")
                 self.device.goto(target, **kwargs)
-                UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm).handle_sync("goto")
+                UIAnomalyGuard(
+                    self.device,
+                    llm=self.llm,
+                    vision_llm=self.vision_model or self.llm,
+                    screenshot_dir_resolver=self._get_report_screenshot_dir,
+                ).handle_sync("goto")
             else:
                 logger.info(f"启动应用: {target}")
                 if hasattr(self.device, "_execute_mcp_action"):
@@ -262,17 +384,15 @@ class PyMidscene:
     
     def screenshot(self, filename: Optional[str] = None, **kwargs) -> bytes:
         """截图
-        :param filename: 文件名（可选，如 "my_screenshot.png"），不指定则自动生成
+        :param filename: 文件名（可选，如 "my_screenshot.png"）；不指定时自动生成 `screenshot_<timestamp>.png`
         :param kwargs: 其他参数
         :return: 截图字节
         """
         try:
-            from pathlib import Path
             from datetime import datetime
 
             # 获取保存目录
-            save_dir = Path(settings.REPORT_SCREENSHOT_SAVE_DIR)
-            save_dir.mkdir(parents=True, exist_ok=True)
+            save_dir = self._get_report_screenshot_dir()
 
             # 生成保存路径
             if filename:
@@ -290,6 +410,18 @@ class PyMidscene:
             # 保存截图
             screenshot_bytes = self.device.screenshot(save_path, **kwargs)
 
+            agent = getattr(self, "_agent", None)
+            report_generator = getattr(agent, "_report_generator", None)
+            report_path = getattr(report_generator, "_report_path", None)
+            if report_generator and report_path:
+                report_screenshot_dir = Path(report_path).parent / "screenshots"
+                try:
+                    if save_path.parent.resolve() == report_screenshot_dir.resolve():
+                        report_generator.adopt_saved_screenshot(save_path)
+                        self._sync_recent_debug_artifacts(save_path)
+                except Exception as sync_exc:
+                    logger.debug(f"同步 report 截图引用失败，保留已保存文件: {sync_exc}")
+
             if self.debug:
                 logger.debug(f"调试: 截图已保存到 {save_path}")
 
@@ -300,7 +432,12 @@ class PyMidscene:
     def keyboard_press(self, key_name: str, **kwargs) -> Optional[Dict[str, Any]]:
         """按下快捷键"""
         try:
-            guard = UIAnomalyGuard(self.device, llm=self.llm, vision_llm=self.vision_model or self.llm)
+            guard = UIAnomalyGuard(
+                self.device,
+                llm=self.llm,
+                vision_llm=self.vision_model or self.llm,
+                screenshot_dir_resolver=self._get_report_screenshot_dir,
+            )
             before_result = guard.handle_sync(f"before_keyboard_press_{key_name}")
             logger.debug(f"[PyMidscene] keyboard_press before-guard result: key={key_name}, result={before_result}")
             self.device.keyboard_press(key_name, **kwargs)

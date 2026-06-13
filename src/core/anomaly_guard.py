@@ -132,10 +132,25 @@ def _describe_llm(llm: Any) -> str:
 
 
 class UIAnomalyGuard:
-    def __init__(self, device, llm=None, vision_llm=None):
+    def __init__(self, device, llm=None, vision_llm=None, screenshot_dir_resolver=None):
         self.device = device
         self.llm = llm
         self.vision_llm = vision_llm or llm
+        self.screenshot_dir_resolver = screenshot_dir_resolver
+
+    def _get_debug_screenshot_dir(self) -> Path:
+        resolver = self.screenshot_dir_resolver or getattr(self.device, "_pymidscene_report_screenshot_dir_resolver", None)
+        if callable(resolver):
+            try:
+                save_dir = resolver()
+                if isinstance(save_dir, Path):
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    return save_dir
+            except Exception as e:
+                logger.debug(f"获取异常调试截图目录失败，回退到默认目录: {e}")
+        save_dir = settings.report_screenshot_dir
+        save_dir.mkdir(parents=True, exist_ok=True)
+        return save_dir
 
     async def _chat_with_screenshot(self, llm, prompt: str, screenshot_b64: str) -> str:
         if screenshot_b64:
@@ -339,16 +354,21 @@ class UIAnomalyGuard:
         try:
             from common.image import get_screenshot_save_dir, save_raw_screenshot, annotate_screenshot, format_box_label
             
-            out_dir = get_screenshot_save_dir()
+            out_dir = get_screenshot_save_dir(self._get_debug_screenshot_dir())
             ts = int(time.time() * 1000)
             prefix = f"{ts}_{_safe_name(action_name)}"
             
             # 使用新的抽象方法保存原始截图
-            raw_filename = f"{prefix}_raw_debug.png"
-            raw_path = save_raw_screenshot(screenshot_b64, raw_filename, is_debug=True)
+            raw_filename = f"{prefix}_raw.png"
+            raw_path = save_raw_screenshot(
+                screenshot_b64,
+                raw_filename,
+                is_debug=True,
+                save_dir=out_dir,
+            )
             
             # 保存标注截图
-            ann_filename = f"{prefix}_annotated_debug.png"
+            ann_filename = f"{prefix}_debug.png"
             ann_path = out_dir / ann_filename
 
             annotations: List[Dict[str, Any]] = []
@@ -399,7 +419,7 @@ class UIAnomalyGuard:
             annotate_screenshot(screenshot_b64, annotations, str(ann_path))
             
             # 保存分析 JSON
-            json_filename = f"{prefix}_analysis_debug.json"
+            json_filename = f"{prefix}_debug.json"
             json_path = out_dir / json_filename
             json_path.write_text(
                 json.dumps({"detection": detection, "decision": decision or {}}, ensure_ascii=False, indent=2),

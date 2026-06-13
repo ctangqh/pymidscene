@@ -195,6 +195,31 @@ def test_uitree_manager_save_writes_raw_and_parsed_files(tmp_path: Path):
     assert parsed_payload["nodes"][0]["name"] == "保存"
 
 
+def test_uitree_manager_save_uses_recent_screenshot_basename(tmp_path: Path):
+    manager = UITreeManager()
+    screenshot_path = tmp_path / "abc123.png"
+    screenshot_path.write_bytes(b"fake-png")
+
+    raw_data = {
+        "tagName": "button",
+        "text": "确定",
+        "id": "confirm-btn",
+        "children": [],
+    }
+
+    result = manager.save(
+        raw_data,
+        "确定按钮",
+        device_type="browser",
+        save_dir=tmp_path,
+    )
+
+    assert result["parsed"] is not None
+    assert result["raw"] is not None
+    assert result["parsed"].name == "abc123.json"
+    assert result["raw"].name == "abc123_raw.json"
+
+
 def test_uitree_manager_parses_ios_tree():
     manager = UITreeManager()
     raw_data = {
@@ -479,6 +504,28 @@ def test_capture_debug_tree_writes_debug_artifacts(tmp_path: Path):
     assert parsed_payload["nodes"][1]["execution_notes"]["persistable"] is True
 
 
+def test_capture_debug_tree_uses_explicit_screenshot_path(tmp_path: Path):
+    previous_debug = settings.DEBUG
+    settings.DEBUG = True
+    screenshot_path = tmp_path / "shot_001.png"
+    screenshot_path.write_bytes(b"fake-png")
+    try:
+        device = _StubNativeDevice()
+        result = capture_debug_tree(
+            device,
+            "确定按钮",
+            save_dir=tmp_path,
+            screenshot_path=screenshot_path,
+        )
+    finally:
+        settings.DEBUG = previous_debug
+
+    assert result["raw"] is not None
+    assert result["parsed"] is not None
+    assert result["raw"].name == "shot_001_raw.json"
+    assert result["parsed"].name == "shot_001.json"
+
+
 def test_normalize_jsonable_data_converts_xml_to_json_dict():
     raw_xml = """
     <Window Name="MainWindow">
@@ -556,7 +603,9 @@ def run_all_uitree_checks():
 
     with TemporaryDirectory() as temp_dir:
         test_uitree_manager_save_writes_raw_and_parsed_files(Path(temp_dir))
+        test_uitree_manager_save_uses_recent_screenshot_basename(Path(temp_dir))
         test_capture_debug_tree_writes_debug_artifacts(Path(temp_dir))
+        test_capture_debug_tree_uses_explicit_screenshot_path(Path(temp_dir))
 
     test_locator_native_tree_uses_new_uitree_package()
 

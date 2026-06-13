@@ -1,8 +1,16 @@
 import os
+from pathlib import Path
+from typing import Dict, List, Optional
+
 import yaml
 from pydantic import AliasChoices, BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional, Dict, List
+from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE_PATH = PROJECT_ROOT / ".env"
+APP_CONFIG_PATH = PROJECT_ROOT / "app.yaml"
+MCP_SERVERS_YAML_PATH = PROJECT_ROOT / "deploy" / "mcp_servers.yaml"
 
 
 class McpServerConfig(BaseModel):
@@ -27,10 +35,31 @@ class OpenAICompatibleModelConfig(BaseModel):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_FILE_PATH),
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            YamlConfigSettingsSource(
+                settings_cls,
+                yaml_file=APP_CONFIG_PATH,
+                yaml_file_encoding="utf-8",
+            ),
+            file_secret_settings,
+        )
 
     # 调试模式
     DEBUG: bool = False
@@ -138,12 +167,10 @@ class Settings(BaseSettings):
 
     # 报告配置
     REPORT_SAVE_DIR: str = "./output/reports"
-    REPORT_SCREENSHOT_SAVE_DIR: str = "./output/reports/screenshots"
     REPORT_AUTO_SAVE: bool = True
     
     # 日志配置
     LOG_FILE: str = "./logs/run.log"
-    LOG_FILE_DEBUG: str = "./logs/run_debug.log"
 
     # MCP 配置
     DEFAULT_MCP_NAME: str = Field(
@@ -186,14 +213,14 @@ class Settings(BaseSettings):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._load_mcp_servers_from_yaml()
-        self._normalize_report_paths()
+        self._apply_mcp_server_api_keys_from_env()
 
     def _load_mcp_servers_from_yaml(self):
         """尝试从 deploy/mcp_servers.yaml 加载配置"""
-        yaml_path = os.path.join(os.getcwd(), "deploy", "mcp_servers.yaml")
-        if os.path.exists(yaml_path):
+        yaml_path = MCP_SERVERS_YAML_PATH
+        if yaml_path.exists():
             try:
-                with open(yaml_path, "r", encoding="utf-8") as f:
+                with yaml_path.open("r", encoding="utf-8") as f:
                     extra_configs = yaml.safe_load(f)
                     if extra_configs and isinstance(extra_configs, dict):
                         for name, config in extra_configs.items():
@@ -201,40 +228,90 @@ class Settings(BaseSettings):
             except Exception as e:
                 print(f"Warning: Failed to load MCP servers from {yaml_path}: {e}")
 
-    def _normalize_report_paths(self):
-        """兼容旧配置，保证截图目录始终跟随 report 目录"""
-        report_dir = os.path.normpath(self.REPORT_SAVE_DIR or "./output/reports")
-        current_screenshot_dir = os.path.normpath(
-            self.REPORT_SCREENSHOT_SAVE_DIR or os.path.join(report_dir, "screenshots")
-        )
-        legacy_dirs = {
-            os.path.normpath("./output/screenshots"),
-            os.path.normpath("output/screenshots"),
-            os.path.normpath(".\\output\\screenshots"),
-            os.path.normpath("output\\screenshots"),
-        }
+    def _apply_mcp_server_api_keys_from_env(self):
+        """按 MCP 实例名从环境变量注入 api_key；未命中时回退到全局 MCP_API_KEY。"""
+        shared_api_key = self.MCP_API_KEY or ""
+        for name, config in self.MCP_SERVERS.items():
+            normalized_name = "".join(ch if ch.isalnum() else "_" for ch in name).upper()
+            env_key = f"MCP_{normalized_name}_API_KEY"
+            specific_api_key = os.getenv(env_key, "")
+            if specific_api_key:
+                config.api_key = specific_api_key
+            elif not config.api_key and shared_api_key:
+                config.api_key = shared_api_key
 
-        if current_screenshot_dir in legacy_dirs:
-            self.REPORT_SCREENSHOT_SAVE_DIR = os.path.join(report_dir, "screenshots")
+    @staticmethod
+    def _resolve_provider_and_model(
+        provider: Optional[str],
+        model: Optional[str],
+        *,
+        fallback_provider: str,
+        fallback_model: Optional[str] = None,
+    ) -> tuple[str, str]:
+        normalized_provider = (provider or "").strip()
+        normalized_model = (model or "").strip()
+        if normalized_model and "/" in normalized_model:
+            inferred_provider, inferred_model = normalized_model.split("/", 1)
+            inferred_provider = inferred_provider.strip()
+            inferred_model = inferred_model.strip()
+            if inferred_provider and inferred_model:
+                return inferred_provider, inferred_model
+        return normalized_provider or fallback_provider, normalized_model or (fallback_model or "")
+
+    @property
+    def report_dir(self) -> Path:
+        return Path(self.REPORT_SAVE_DIR)
+
+    @property
+    def report_screenshot_dir(self) -> Path:
+        return self.report_dir / "screenshots"
+
+    @property
+    def REPORT_SCREENSHOT_SAVE_DIR(self) -> str:
+        """兼容旧代码，截图目录始终跟随 report 目录。"""
+        return str(self.report_screenshot_dir)
+
+    @property
+    def LOG_FILE_DEBUG(self) -> str:
+        """兼容旧代码，debug 日志文件默认由 LOG_FILE 自动派生。"""
+        log_path = Path(self.LOG_FILE)
+        suffix = log_path.suffix or ".log"
+        if log_path.suffix:
+            debug_name = f"{log_path.stem}_debug{suffix}"
+        else:
+            debug_name = f"{log_path.name}_debug{suffix}"
+        return str(log_path.with_name(debug_name))
 
     @property
     def llm_config(self) -> OpenAICompatibleModelConfig:
+        provider, model = self._resolve_provider_and_model(
+            self.LLM_PROVIDER,
+            self.LLM_MODEL,
+            fallback_provider="openai",
+        )
         return OpenAICompatibleModelConfig(
-            provider=self.LLM_PROVIDER,
+            provider=provider,
             api_key=self.LLM_API_KEY,
             base_url=self.LLM_BASE_URL,
-            model=self.LLM_MODEL,
+            model=model,
             timeout=self.MODEL_TIMEOUT,
             max_retries=self.MODEL_MAX_RETRIES,
         )
 
     @property
     def vision_config(self) -> OpenAICompatibleModelConfig:
+        llm_config = self.llm_config
+        provider, model = self._resolve_provider_and_model(
+            self.VISION_PROVIDER,
+            self.VISION_MODEL,
+            fallback_provider=llm_config.provider,
+            fallback_model=llm_config.model,
+        )
         return OpenAICompatibleModelConfig(
-            provider=self.VISION_PROVIDER or self.LLM_PROVIDER,
+            provider=provider,
             api_key=self.VISION_API_KEY or self.LLM_API_KEY,
             base_url=self.VISION_BASE_URL or self.LLM_BASE_URL,
-            model=self.VISION_MODEL or self.LLM_MODEL,
+            model=model,
             timeout=self.MODEL_TIMEOUT,
             max_retries=self.MODEL_MAX_RETRIES,
         )
@@ -265,7 +342,7 @@ class Settings(BaseSettings):
 
     @property
     def DEFAULT_LLM_PROVIDER(self) -> str:
-        return self.LLM_PROVIDER
+        return self.llm_config.provider
 
     @property
     def DEFAULT_VISION_PROVIDER(self) -> str:
@@ -281,7 +358,7 @@ class Settings(BaseSettings):
 
     @property
     def OPENAI_MODEL(self) -> str:
-        return self.LLM_MODEL
+        return self.llm_config.model
 
     @property
     def OPENAI_VISION_MODEL(self) -> str:
@@ -309,7 +386,7 @@ class Settings(BaseSettings):
 
     @property
     def DOUBAN_MODEL(self) -> str:
-        return self.LLM_MODEL
+        return self.llm_config.model
 
     @property
     def DOUBAN_VISION_MODEL(self) -> str:
