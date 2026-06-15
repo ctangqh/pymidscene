@@ -56,8 +56,8 @@ ms.close()
 - `mcp_server_url`: 可选，覆盖配置中的 MCP 服务器地址
 - `debug`: 是否启用调试模式。开启后会打印详细日志、保存 UITree 调试产物，并在未显式指定时默认开启 `visual_debug`
 - `device_options`: 设备特定选项字典
-- `llm_options`: LLM 特定选项字典
-- `vision_options`: 视觉模型特定选项字典
+- `llm_options`: LLM 特定选项字典，仅在你需要临时覆盖本地配置时传入
+- `vision_options`: 视觉模型特定选项字典，仅在你需要临时覆盖本地配置时传入
 - `**kwargs`: 其他高级参数，会透传给 `PyMidscene` / `Agent`，例如 `visual_debug=False`
 
 **返回值：**
@@ -66,10 +66,10 @@ ms.close()
 **示例：**
 
 ```python
-# 最小化配置
+# 最小化配置：模型配置默认读取项目根目录的 .env / app.yaml
 ms = create_client(device_provider="mcp_winapp", mcp_name="winapp")
 
-# 完整配置
+# 临时覆盖模型配置
 ms = create_client(
     device_provider="mcp_winapp",
     llm_provider="deepseek",
@@ -81,6 +81,12 @@ ms = create_client(
     vision_options={"api_key": "xxx", "base_url": "yyy"},
 )
 ```
+
+默认情况下，`create_client()` 不需要单独初始化模型参数：
+
+- 不传 `llm_provider` / `vision_provider` 时，会回落到本地配置中的 `LLM_PROVIDER` / `VISION_PROVIDER`
+- 不传 `llm_options` / `vision_options` 时，会回落到本地配置中的 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 等字段
+- 本地配置由项目根目录的 `.env` 与 `app.yaml` 共同提供；如果同名字段同时存在，`.env` 优先级更高
 
 ### 2. 设备管理
 

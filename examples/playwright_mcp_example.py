@@ -45,10 +45,10 @@ def main():
     print("PyMidscene Playwright MCP Google 搜索示例")
     print("=" * 60)
 
+    # 默认从项目根目录的 .env / app.yaml 读取模型配置；
+    # 这里只覆盖 Playwright MCP 连接参数。
     ms = create_client(
         device_provider="mcp_playwright",
-        llm_provider=None,
-        vision_provider=None,
         debug=True,
         device_options={
             "mcp_server_url": MCP_SERVER_URL,
