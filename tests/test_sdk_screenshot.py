@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from common.config import settings
+import sdk.pymidscene as pymidscene_module
 from sdk.pymidscene import PyMidscene
 
 
@@ -121,6 +122,54 @@ def test_screenshot_adopts_recent_debug_artifacts_to_business_name(tmp_path: Pat
         settings.REPORT_SAVE_DIR = original_report_save_dir
 
 
+def test_debug_mode_enables_visual_debug_by_default():
+    class _DummyDevice:
+        interface_type = "browser"
+
+    def _fake_get_device(device_type=None, **kwargs):
+        return _DummyDevice()
+
+    def _fake_get_llm(*args, **kwargs):
+        return SimpleNamespace(capabilities=SimpleNamespace(supports_vision=True))
+
+    original_get_device = pymidscene_module.get_device
+    original_get_llm = pymidscene_module.get_llm
+    try:
+        pymidscene_module.get_device = _fake_get_device
+        pymidscene_module.get_llm = _fake_get_llm
+
+        sdk = PyMidscene(device_provider="mcp_playwright", debug=True)
+
+        assert sdk._agent_options["visual_debug"] is True
+    finally:
+        pymidscene_module.get_device = original_get_device
+        pymidscene_module.get_llm = original_get_llm
+
+
+def test_visual_debug_explicit_false_is_preserved():
+    class _DummyDevice:
+        interface_type = "browser"
+
+    def _fake_get_device(device_type=None, **kwargs):
+        return _DummyDevice()
+
+    def _fake_get_llm(*args, **kwargs):
+        return SimpleNamespace(capabilities=SimpleNamespace(supports_vision=True))
+
+    original_get_device = pymidscene_module.get_device
+    original_get_llm = pymidscene_module.get_llm
+    try:
+        pymidscene_module.get_device = _fake_get_device
+        pymidscene_module.get_llm = _fake_get_llm
+
+        sdk = PyMidscene(device_provider="mcp_playwright", debug=True, visual_debug=False)
+
+        assert sdk._agent_options["visual_debug"] is False
+    finally:
+        pymidscene_module.get_device = original_get_device
+        pymidscene_module.get_llm = original_get_llm
+
+
 def run_all_sdk_screenshot_checks():
     from tempfile import TemporaryDirectory
 
@@ -130,6 +179,8 @@ def run_all_sdk_screenshot_checks():
         test_screenshot_generates_system_filename_when_missing(tmp_path)
         test_screenshot_uses_current_report_screenshots_dir(tmp_path)
         test_screenshot_adopts_recent_debug_artifacts_to_business_name(tmp_path)
+        test_debug_mode_enables_visual_debug_by_default()
+        test_visual_debug_explicit_false_is_preserved()
 
 
 if __name__ == "__main__":

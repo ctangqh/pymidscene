@@ -6,7 +6,7 @@ from unittest.mock import Mock
 from common.config import settings
 from core.locator import ElementLocator
 from core.uitree import UIElement, UITREE_SCHEMA_VERSION, UITreeManager
-from core.uitree.debug import capture_debug_tree
+from core.uitree.debug import capture_debug_tree, capture_full_page_control_debug
 from core.uitree.registry import iter_matching_adapters
 from core.uitree.normalize import extract_jsonable_payload, normalize_jsonable_data
 
@@ -153,6 +153,98 @@ def test_uitree_manager_parses_playwright_device_dom_shape():
     assert child.automation_id == "kw"
     assert child.class_name == "search-input"
     assert child.attributes["placeholder"] == "请输入搜索词"
+
+
+def test_uitree_manager_parses_playwright_snapshot_markdown():
+    manager = UITreeManager()
+    raw_data = {
+        "content": """### Page
+- Page URL: https://www.google.com/
+- Page Title: Google
+### Snapshot
+```yaml
+- search [ref=e35]:
+  - generic [ref=e39]:
+    - combobox "Search" [active] [ref=e46]
+    - button "Search by voice" [ref=e49] [cursor=pointer]:
+      - img [ref=e50]
+```
+"""
+    }
+
+    tree = manager.parse(raw_data, device_type="browser")
+
+    assert isinstance(tree, UIElement)
+    assert tree.name == "Google"
+    assert len(tree.children) == 1
+
+    search_section = tree.children[0]
+    assert search_section.tag == "search"
+    assert search_section.attributes["ref"] == "e35"
+
+    group = search_section.children[0]
+    combobox = group.children[0]
+    assert combobox.name == "Search"
+    assert combobox.tag == "combobox"
+    assert combobox.control_type == "combobox"
+    assert combobox.attributes["ref"] == "e46"
+    assert combobox.action_capabilities["input"] is True
+    assert combobox.element_ref is not None
+    assert any(candidate.selector_type == "playwright-ref" for candidate in combobox.locator_candidates)
+    assert any(candidate.selector_type == "css" for candidate in combobox.locator_candidates)
+    assert any(candidate.selector_type == "role" for candidate in combobox.locator_candidates)
+
+
+def test_uitree_manager_finds_playwright_snapshot_input_node_without_bounds():
+    manager = UITreeManager()
+    raw_data = {
+        "content": """### Page
+- Page URL: https://www.google.com/
+- Page Title: Google
+### Snapshot
+```yaml
+- search [ref=e35]:
+  - generic [ref=e39]:
+    - combobox "Search" [active] [ref=e46]
+```
+"""
+    }
+
+    node = manager.find_best_match(raw_data, "Google 搜索输入框", device_type="browser")
+
+    assert node is not None
+    assert node.name == "Search"
+    assert node.tag == "combobox"
+    assert node.element_ref is not None
+    assert any(candidate.selector_type == "css" for candidate in node.locator_candidates)
+
+
+def test_uitree_manager_finds_google_search_button_with_cn_description():
+    manager = UITreeManager()
+    raw_data = {
+        "content": """### Page
+- Page URL: https://www.google.com/
+- Page Title: Google
+### Snapshot
+```yaml
+- generic [ref=e2]:
+  - navigation [ref=e3]:
+    - button "Google apps" [ref=e15] [cursor=pointer]
+  - search [ref=e35]:
+    - generic [ref=e56]:
+      - button "Google Search" [ref=e57] [cursor=pointer]
+      - button "I'm Feeling Lucky" [ref=e58] [cursor=pointer]
+```
+"""
+    }
+
+    node = manager.find_best_match(raw_data, "Google 搜索按钮", device_type="browser")
+
+    assert node is not None
+    assert node.name == "Google Search"
+    assert node.element_ref is not None
+    assert any(candidate.selector_type == "playwright-ref" for candidate in node.locator_candidates)
+    assert any(candidate.selector_type == "role" for candidate in node.locator_candidates)
 
 
 def test_uitree_manager_save_writes_raw_and_parsed_files(tmp_path: Path):
@@ -389,6 +481,62 @@ def test_uitree_manager_marks_playwright_ref_as_non_persistable():
     assert best["requires_resolution"] is False
 
 
+def test_uitree_manager_prefers_css_over_playwright_ref_for_browser_input():
+    manager = UITreeManager()
+    candidates = [
+        {
+            "platform": "playwright",
+            "selector_type": "playwright-ref",
+            "selector_value": "e46",
+            "extra": {},
+        },
+        {
+            "platform": "playwright",
+            "selector_type": "css",
+            "selector_value": '[aria-label="Search"]',
+            "extra": {},
+        },
+    ]
+
+    best = manager.select_best_candidate(
+        candidates,
+        device_type="browser",
+        action_type="input",
+        actionable_only=True,
+    )
+
+    assert best is not None
+    assert best["selector_type"] == "css"
+
+
+def test_uitree_manager_prefers_playwright_ref_for_browser_tap():
+    manager = UITreeManager()
+    candidates = [
+        {
+            "platform": "playwright",
+            "selector_type": "playwright-ref",
+            "selector_value": "e163",
+            "extra": {},
+        },
+        {
+            "platform": "playwright",
+            "selector_type": "role",
+            "selector_value": "button:Google Search",
+            "extra": {"role": "button", "name": "Google Search"},
+        },
+    ]
+
+    best = manager.select_best_candidate(
+        candidates,
+        device_type="browser",
+        action_type="tap",
+        actionable_only=True,
+    )
+
+    assert best is not None
+    assert best["selector_type"] == "playwright-ref"
+
+
 def test_uitree_manager_falls_back_to_generic_tree():
     manager = UITreeManager()
     raw_data = {
@@ -569,6 +717,16 @@ class _StubNativeDevice:
             """
         }
 
+    def screenshot_base64(self):
+        from base64 import b64encode
+        from io import BytesIO
+        from PIL import Image
+
+        image = Image.new("RGB", (16, 16), (255, 255, 255))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return b64encode(buffer.getvalue()).decode("utf-8")
+
 
 def test_locator_native_tree_uses_new_uitree_package():
     locator = ElementLocator(_StubNativeDevice(), Mock())
@@ -588,13 +746,45 @@ def test_locator_native_tree_uses_new_uitree_package():
     assert "UI 树定位" in (result.reason or "")
 
 
+def test_capture_full_page_control_debug_writes_overlay_artifacts(tmp_path: Path):
+    previous_debug = settings.DEBUG
+    settings.DEBUG = True
+    try:
+        device = _StubNativeDevice()
+        result = capture_full_page_control_debug(
+            device,
+            "整页控件调试",
+            save_dir=tmp_path,
+            prefix="page_controls",
+        )
+    finally:
+        settings.DEBUG = previous_debug
+
+    assert result["raw"] is not None
+    assert result["annotated"] is not None
+    assert result["summary"] is not None
+    assert result["raw"].exists()
+    assert result["annotated"].exists()
+    assert result["summary"].exists()
+
+    summary = json.loads(result["summary"].read_text(encoding="utf-8"))
+    assert summary["description"] == "整页控件调试"
+    assert summary["device_type"] == "windows"
+    assert len(summary["annotations"]) >= 1
+
+
 def run_all_uitree_checks():
     test_uitree_manager_parses_windows_xml_payload()
     test_uitree_manager_parses_windows_dict_payload()
     test_uitree_manager_parses_playwright_tree()
     test_uitree_manager_parses_playwright_device_dom_shape()
+    test_uitree_manager_parses_playwright_snapshot_markdown()
+    test_uitree_manager_finds_playwright_snapshot_input_node_without_bounds()
+    test_uitree_manager_finds_google_search_button_with_cn_description()
     test_uitree_manager_parses_ios_tree()
     test_uitree_manager_parses_hypium_tree()
+    test_uitree_manager_prefers_css_over_playwright_ref_for_browser_input()
+    test_uitree_manager_prefers_playwright_ref_for_browser_tap()
     test_uitree_manager_falls_back_to_generic_tree()
     test_uitree_manager_keeps_nested_path_and_depth()
     test_iter_matching_adapters_uses_expected_order()
@@ -608,6 +798,8 @@ def run_all_uitree_checks():
         test_capture_debug_tree_uses_explicit_screenshot_path(Path(temp_dir))
 
     test_locator_native_tree_uses_new_uitree_package()
+    with TemporaryDirectory() as temp_dir:
+        test_capture_full_page_control_debug_writes_overlay_artifacts(Path(temp_dir))
 
 
 if __name__ == "__main__":

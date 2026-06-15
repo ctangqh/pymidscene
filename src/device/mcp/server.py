@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-pymidscene MCP服务端
-将pymidscene的AI自动化能力暴露为标准MCP工具，支持Claude Desktop、LangChain、AutoGPT等所有MCP兼容框架直接调用
+pymidscene MCP server
+Expose pymidscene AI automation capabilities as standard MCP tools for direct use by MCP-compatible frameworks.
 """
 import asyncio
 import os
 import sys
 from pathlib import Path
-# 自动添加src到路径
+# Automatically add src to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from mcp.server import Server
@@ -18,10 +18,10 @@ from common.logger import logger
 from common.config import settings
 from sdk.pymidscene import create_client
 
-# 初始化MCP服务端
+# Initialize MCP server
 server = Server("pymidscene-server")
 
-# 全局客户端实例，复用连接提升性能
+# Reuse a global client instance to avoid reconnect overhead
 _client = None
 
 def get_client():
@@ -32,17 +32,17 @@ def get_client():
 
 @server.list_tools()
 async def list_tools() -> List[Tool]:
-    """返回pymidscene支持的所有MCP工具列表，符合标准JSON Schema规范"""
+    """Return the MCP tools supported by pymidscene in standard JSON Schema format."""
     return [
         Tool(
             name="ai_goto",
-            description="打开指定的网页URL",
+            description="Open the specified web page URL.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "要打开的网页完整URL，例如https://www.baidu.com"
+                        "description": "Full URL of the page to open, for example https://www.baidu.com"
                     }
                 },
                 "required": ["url"]
@@ -50,13 +50,13 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="ai_click",
-            description="点击页面上的元素，不需要写CSS/XPath，直接用自然语言描述元素即可",
+            description="Click an element on the page using a natural-language description instead of CSS or XPath.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "element_description": {
                         "type": "string",
-                        "description": "要点击的元素的自然语言描述，例如'蓝色的搜索按钮'、'页面顶部的登录链接'"
+                        "description": "Natural-language description of the element to click, for example 'the blue search button' or 'the login link at the top of the page'"
                     }
                 },
                 "required": ["element_description"]
@@ -64,21 +64,21 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="ai_input",
-            description="向页面元素输入文本，不需要写CSS/XPath，直接用自然语言描述元素即可",
+            description="Type text into a page element using a natural-language description instead of CSS or XPath.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "text": {
                         "type": "string",
-                        "description": "要输入的文本内容"
+                        "description": "Text content to input"
                     },
                     "element_description": {
                         "type": "string",
-                        "description": "要输入的元素的自然语言描述，例如'用户名输入框'、'搜索框'"
+                        "description": "Natural-language description of the target element, for example 'the username input field' or 'the search box'"
                     },
                     "clear_before": {
                         "type": "boolean",
-                        "description": "输入前是否清空原有内容，默认为true",
+                        "description": "Whether to clear the existing content before typing. Defaults to true.",
                         "default": True
                     }
                 },
@@ -87,13 +87,13 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="ai_extract",
-            description="从页面中提取指定的信息，自动返回结构化JSON结果",
+            description="Extract the requested information from the page and return structured JSON.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "提取要求的自然语言描述，例如'提取所有搜索结果的标题和链接，返回[{title: str, url: str}]格式'、'提取商品的价格和库存'"
+                        "description": "Natural-language extraction request, for example 'extract the titles and links of all search results and return [{title: str, url: str}]' or 'extract product price and stock'"
                     }
                 },
                 "required": ["query"]
@@ -101,18 +101,18 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="ai_assert",
-            description="断言页面状态是否符合要求，不符合会返回错误",
+            description="Assert that the page state matches the requirement and return an error if it does not.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "assertion": {
                         "type": "string",
-                        "description": "断言要求的自然语言描述，例如'页面显示登录成功提示'、'搜索结果数量大于10条'"
+                        "description": "Natural-language assertion, for example 'the page shows a login success message' or 'there are more than 10 search results'"
                     },
                     "error_message": {
                         "type": "string",
-                        "description": "断言失败时返回的错误信息，可选",
-                        "default": "断言失败"
+                        "description": "Optional error message to return when the assertion fails",
+                        "default": "Assertion failed"
                     }
                 },
                 "required": ["assertion"]
@@ -120,18 +120,18 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="ai_screenshot",
-            description="对当前页面截图，返回截图内容，可选择是否完整截图",
+            description="Capture a screenshot of the current page and optionally save it locally.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "full_page": {
                         "type": "boolean",
-                        "description": "是否截取完整页面，默认为true",
+                        "description": "Whether to capture the full page. Defaults to true.",
                         "default": True
                     },
                     "save_path": {
                         "type": "string",
-                        "description": "可选，截图保存到本地的路径",
+                        "description": "Optional local path where the screenshot will be saved",
                         "default": None
                     }
                 }
@@ -139,35 +139,35 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="ai_scroll",
-            description="滚动页面，支持上下左右方向滚动",
+            description="Scroll the page in the specified direction.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "direction": {
                         "type": "string",
-                        "description": "滚动方向：down/up/left/right，默认为down",
+                        "description": "Scroll direction: down, up, left, or right. Defaults to down.",
                         "default": "down"
                     },
                     "distance": {
                         "type": "integer",
-                        "description": "滚动距离，像素单位，默认滚动80%视口高度"
+                        "description": "Scroll distance in pixels. By default, scrolls about 80% of the viewport height."
                     }
                 }
             }
         ),
         Tool(
             name="ai_wait_for",
-            description="等待页面满足指定条件，例如等待某个元素出现、等待页面加载完成",
+            description="Wait until the page satisfies the specified condition, such as an element appearing or loading finishing.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "condition": {
                         "type": "string",
-                        "description": "等待条件的自然语言描述，例如'等待搜索结果加载完成'、'等待登录按钮出现'"
+                        "description": "Natural-language wait condition, for example 'wait until search results finish loading' or 'wait for the login button to appear'"
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "超时时间，毫秒单位，默认30000毫秒",
+                        "description": "Timeout in milliseconds. Defaults to 30000.",
                         "default": 30000
                     }
                 },
@@ -176,45 +176,49 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="ai_close",
-            description="关闭浏览器，结束当前会话"
+            description="Close the browser and end the current session.",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
         )
     ]
 
 @server.call_tool()
 async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent | ImageContent]:
-    """处理工具调用请求"""
+    """Handle MCP tool invocation requests."""
     client = get_client()
     try:
-        logger.info(f"收到MCP工具调用：{name}，参数：{json.dumps(arguments, ensure_ascii=False)}")
+        logger.info(f"MCP tool call received: {name}, arguments: {json.dumps(arguments, ensure_ascii=False)}")
         result_content = []
 
         if name == "ai_goto":
             url = arguments["url"]
             client.goto(url)
-            result_content.append(TextContent(type="text", text=f"✅ 成功打开页面：{url}，当前页面标题：{client.device.evaluate_script('document.title')}"))
+            result_content.append(TextContent(type="text", text=f"Opened page successfully: {url}. Current page title: {client.device.evaluate_script('document.title')}"))
 
         elif name == "ai_click":
             desc = arguments["element_description"]
             client.ai_click(desc)
-            result_content.append(TextContent(type="text", text=f"✅ 成功点击元素：{desc}"))
+            result_content.append(TextContent(type="text", text=f"Clicked element successfully: {desc}"))
 
         elif name == "ai_input":
             text = arguments["text"]
             desc = arguments["element_description"]
             clear_before = arguments.get("clear_before", True)
             client.ai_input(text, locate=desc, clear_before=clear_before)
-            result_content.append(TextContent(type="text", text=f"✅ 成功向元素【{desc}】输入文本：{text[:50]}{'...' if len(text) > 50 else ''}"))
+            result_content.append(TextContent(type="text", text=f"Entered text into element [{desc}]: {text[:50]}{'...' if len(text) > 50 else ''}"))
 
         elif name == "ai_extract":
             query = arguments["query"]
             result = client.ai_extract(query)
-            result_content.append(TextContent(type="text", text=f"✅ 提取成功，结果：\n{json.dumps(result, ensure_ascii=False, indent=2)}"))
+            result_content.append(TextContent(type="text", text=f"Extraction succeeded. Result:\n{json.dumps(result, ensure_ascii=False, indent=2)}"))
 
         elif name == "ai_assert":
             assertion = arguments["assertion"]
-            error_msg = arguments.get("error_message", "断言失败")
+            error_msg = arguments.get("error_message", "Assertion failed")
             client.ai_assert(assertion, error_msg)
-            result_content.append(TextContent(type="text", text=f"✅ 断言成功：{assertion}"))
+            result_content.append(TextContent(type="text", text=f"Assertion passed: {assertion}"))
 
         elif name == "ai_screenshot":
             full_page = arguments.get("full_page", True)
@@ -226,56 +230,56 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent | 
             base64_img = base64.b64encode(img_bytes).decode("utf-8")
             result_content.append(ImageContent(type="image", data=base64_img, mime_type="image/png"))
             if save_path:
-                result_content.append(TextContent(type="text", text=f"✅ 截图已保存到：{save_path}"))
+                result_content.append(TextContent(type="text", text=f"Screenshot saved to: {save_path}"))
 
         elif name == "ai_scroll":
             direction = arguments.get("direction", "down")
             distance = arguments.get("distance")
             client.ai_scroll(direction=direction, distance=distance)
-            result_content.append(TextContent(type="text", text=f"✅ 页面已向{direction}滚动{distance or '默认距离'}像素"))
+            result_content.append(TextContent(type="text", text=f"Scrolled page {direction} by {distance or 'the default distance'} pixels"))
 
         elif name == "ai_wait_for":
             condition = arguments["condition"]
             timeout = arguments.get("timeout", 30000)
             client.ai_wait_for(condition, timeout=timeout)
-            result_content.append(TextContent(type="text", text=f"✅ 等待条件满足：{condition}"))
+            result_content.append(TextContent(type="text", text=f"Wait condition satisfied: {condition}"))
 
         elif name == "ai_close":
             global _client
             if _client:
                 _client.device.close()
                 _client = None
-            result_content.append(TextContent(type="text", text="✅ 浏览器已关闭，会话结束"))
+            result_content.append(TextContent(type="text", text="Browser closed. Session ended."))
 
         else:
-            raise ValueError(f"不支持的工具：{name}")
+            raise ValueError(f"Unsupported tool: {name}")
 
         return result_content
 
     except Exception as e:
-        error_msg = f"❌ 工具调用失败：{str(e)}"
+        error_msg = f"Tool call failed: {str(e)}"
         logger.error(error_msg)
         return [TextContent(type="text", text=error_msg)]
 
 async def main():
-    """启动MCP服务端，支持两种运行模式：
-    1. STDIO模式（默认）：用于Claude Desktop等本地MCP客户端对接
-    2. HTTP模式：用于远程Agent/服务调用
+    """Start the MCP server.
+    1. STDIO mode (default): for local MCP clients such as Claude Desktop
+    2. HTTP mode: for remote agents or services
     """
     import argparse
-    parser = argparse.ArgumentParser(description="pymidscene MCP服务端")
-    parser.add_argument("--mode", choices=["stdio", "http"], default="stdio", help="运行模式")
-    parser.add_argument("--host", default="0.0.0.0", help="HTTP模式监听地址")
-    parser.add_argument("--port", type=int, default=8765, help="HTTP模式监听端口")
+    parser = argparse.ArgumentParser(description="pymidscene MCP server")
+    parser.add_argument("--mode", choices=["stdio", "http"], default="stdio", help="Run mode")
+    parser.add_argument("--host", default="0.0.0.0", help="Host for HTTP mode")
+    parser.add_argument("--port", type=int, default=8765, help="Port for HTTP mode")
     args = parser.parse_args()
 
     if args.mode == "stdio":
-        logger.info("启动pymidscene MCP服务端（STDIO模式）")
+        logger.info("Starting pymidscene MCP server in STDIO mode")
         async with server.run_stdio():
-            await asyncio.Future()  # 永久运行
+            await asyncio.Future()  # Run forever
     else:
         from mcp.server.http import HTTPTransport
-        logger.info(f"启动pymidscene MCP服务端（HTTP模式）：http://{args.host}:{args.port}")
+        logger.info(f"Starting pymidscene MCP server in HTTP mode: http://{args.host}:{args.port}")
         transport = HTTPTransport(host=args.host, port=args.port)
         async with server.run(transport):
             await asyncio.Future()

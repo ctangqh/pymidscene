@@ -27,19 +27,19 @@ from .uitree import uitree_manager
 
 class LocateResult(BaseModel):
     """定位结果模型"""
-    selector: Optional[str] = Field(None, description="元素的CSS选择器")
-    confidence: float = Field(description="定位结果置信度，0-1之间")
-    x: Optional[float] = Field(None, description="元素中心点X坐标")
-    y: Optional[float] = Field(None, description="元素中心点Y坐标")
-    bounding_box: Optional[Dict[str, float]] = Field(None, description="元素边界框: x, y, width, height")
-    reason: Optional[str] = Field(None, description="定位结果的分析说明")
+    selector: Optional[str] = Field(None, description="CSS selector of the matched element")
+    confidence: float = Field(description="Confidence score of the locate result, between 0 and 1")
+    x: Optional[float] = Field(None, description="X coordinate of the element center")
+    y: Optional[float] = Field(None, description="Y coordinate of the element center")
+    bounding_box: Optional[Dict[str, float]] = Field(None, description="Element bounding box: x, y, width, height")
+    reason: Optional[str] = Field(None, description="Brief explanation of why this element was selected")
 
 
 class ExtractResult(BaseModel):
     """信息提取结果模型"""
-    data: Any = Field(description="提取到的信息")
-    confidence: float = Field(description="提取结果置信度，0-1之间")
-    reason: Optional[str] = Field(None, description="提取结果的说明")
+    data: Any = Field(description="Extracted information")
+    confidence: float = Field(description="Confidence score of the extraction result, between 0 and 1")
+    reason: Optional[str] = Field(None, description="Brief explanation of the extraction result")
 
 
 class ElementLocator:
@@ -52,7 +52,11 @@ class ElementLocator:
         self.screenshot_dir_resolver = screenshot_dir_resolver
         self.model_runtime = vision_model or llm
         self.confidence_threshold = settings.LOCATE_CONFIDENCE_THRESHOLD
-        self.service = Service(lambda: self._build_context(), llm=self.model_runtime)
+        self.service = Service(
+            lambda: self._build_context(),
+            llm=self.model_runtime,
+            screenshot_dir_resolver=self._get_debug_screenshot_dir,
+        )
         self.last_result: Optional[LocateResult] = None
 
     def _get_debug_screenshot_dir(self) -> Path:
@@ -313,21 +317,22 @@ class ElementLocator:
         messages = [
             {
                 "role": "system",
-                "content": """你是一个专业的前端元素定位专家，根据用户提供的页面简化DOM结构和元素描述，找到最匹配的元素。
-请严格按照要求返回JSON格式的结果，不要输出其他内容：
-1. selector字段：返回最准确的CSS选择器，尽量使用id、class、属性等唯一标识
-2. confidence字段：返回你对这个定位结果的置信度，0-1之间，1表示完全确定
-3. reason字段：简单说明你为什么选择这个选择器
-注意：如果没有找到匹配的元素，confidence返回0，selector返回空字符串。"""
+                "content": """You are an expert frontend element locator. Given the page's simplified DOM structure and the user's target description, find the best matching element.
+Return JSON only. Do not output any extra text.
+Requirements:
+1. selector: return the most accurate CSS selector possible, preferably using unique identifiers such as id, class, or stable attributes
+2. confidence: return a confidence score between 0 and 1, where 1 means completely certain
+3. reason: briefly explain why this selector is the best match
+If no matching element is found, return an empty selector and set confidence to 0."""
             },
             {
                 "role": "user",
-                "content": f"""页面简化DOM结构：
+                "content": f"""Simplified page DOM structure:
 {dom_json}
 
-需要定位的元素描述：{element_description}
+Target element description: {element_description}
 
-请返回定位结果："""
+Return the locate result:"""
             }
         ]
         

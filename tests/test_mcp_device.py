@@ -40,6 +40,19 @@ class _StubWinAppDevice(McpWinAppDevice):
         return _text_result("ok")
 
 
+class _StubPlaywrightDevice(McpPlaywrightDevice):
+    def __init__(self):
+        super().__init__(mcp_name="playwright")
+        self.calls = []
+
+    def _submit(self, coro, timeout=None):
+        return asyncio.run(coro)
+
+    async def _call_mcp(self, tool_name: str, arguments):
+        self.calls.append((tool_name, dict(arguments)))
+        return _text_result("ok")
+
+
 class _StubScreenshotErrorDevice(BaseMcpDevice):
     @property
     def interface_type(self) -> str:
@@ -92,6 +105,38 @@ def test_playwright_resolve_selector_ref_keeps_selector_semantics():
     assert ref["selector_type"] == "css"
     assert ref["selector_value"] == "#submit-btn"
     assert ref["resolved"] is False
+
+
+def test_playwright_action_space_includes_input():
+    device = McpPlaywrightDevice(mcp_name="playwright")
+
+    action_names = [action.name for action in device.action_space()]
+
+    assert "Input" in action_names
+    assert "Tap" in action_names
+
+
+def test_playwright_input_passes_single_selector_ref():
+    device = _StubPlaywrightDevice()
+
+    device.input(
+        "PyMidscene",
+        selector="e46",
+        selector_ref={
+            "platform": "playwright",
+            "selector_type": "playwright-ref",
+            "selector_value": "e46",
+            "actionable": True,
+            "persistable": False,
+            "requires_resolution": False,
+            "resolved": False,
+            "extra": {},
+        },
+    )
+
+    assert device.calls == [
+        ("browser_type", {"element": "e46", "ref": "e46", "text": "PyMidscene"})
+    ]
 
 
 def test_winapp_resolve_selector_ref_returns_runtime_handle():
@@ -167,6 +212,8 @@ def test_mcp_screenshot_error_text_is_not_decoded_as_base64():
 def run_all_mcp_device_checks():
     test_base_mcp_device_resolve_selector_ref_returns_selector()
     test_playwright_resolve_selector_ref_keeps_selector_semantics()
+    test_playwright_action_space_includes_input()
+    test_playwright_input_passes_single_selector_ref()
     test_winapp_resolve_selector_ref_returns_runtime_handle()
     test_winapp_click_uses_resolved_element_id()
     test_mcp_screenshot_error_text_is_not_decoded_as_base64()

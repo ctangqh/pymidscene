@@ -271,8 +271,8 @@ class UIAnomalyGuard:
             "- If interface_type is web/browser and anomaly_kind=system_dialog, decision must be fail.\n"
             "- If this is a native blocking anomaly, decision should prefer dismiss so automation can continue.\n"
             "- Prefer buttons that close/dismiss the anomaly while keeping the workflow moving forward, such as "
-            "'不保存', '关闭', '跳过', '稍后', '取消授权', 'Not now', 'Close', 'Dismiss', 'Don't Save'.\n"
-            "- Avoid positive confirmation actions like '保存' unless it is the only action that removes the blocker.\n"
+            "'Close', 'Dismiss', 'Not now', 'Don't Save', or localized equivalents like '关闭', '跳过', '稍后', '不保存', '取消授权'.\n"
+            "- Avoid positive confirmation actions like 'Save' unless it is the only action that removes the blocker, including localized variants such as '保存'.\n"
         )
         prompt = (
             "You are a UI anomaly decision maker. The detector has already identified the full-page anomaly state.\n"

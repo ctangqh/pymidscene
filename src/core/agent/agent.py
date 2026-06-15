@@ -98,7 +98,11 @@ class Agent:
         self.vision_llm = vision_llm or self.llm
         
         # Service for AI operations
-        self.service = Service(lambda: self.get_ui_context(), llm=self.vision_llm)
+        self.service = Service(
+            lambda: self.get_ui_context(),
+            llm=self.vision_llm,
+            screenshot_dir_resolver=self._get_report_screenshot_dir,
+        )
         
         # Report dump
         self.dump = self._reset_dump()
@@ -243,6 +247,32 @@ class Agent:
                 logger.debug(f"on_task_start_tip callback error: {e}")
     
     # ==================== Visual Debug ====================
+
+    @staticmethod
+    def _rect_to_screenshot_space(rect: Any, *, coordinate_space: str = "logical", ratio: float = 1.0) -> Dict[str, float]:
+        if isinstance(rect, dict):
+            left = float(rect.get("left", 0))
+            top = float(rect.get("top", 0))
+            width = float(rect.get("width", 0))
+            height = float(rect.get("height", 0))
+        else:
+            left = float(getattr(rect, "left", 0))
+            top = float(getattr(rect, "top", 0))
+            width = float(getattr(rect, "width", 0))
+            height = float(getattr(rect, "height", 0))
+
+        if coordinate_space == "logical" and ratio and ratio != 1.0:
+            left *= ratio
+            top *= ratio
+            width *= ratio
+            height *= ratio
+
+        return {
+            "left": left,
+            "top": top,
+            "width": width,
+            "height": height,
+        }
     
     async def _handle_visual_debug(self, execution_dump: Dict[str, Any]) -> None:
         """Handle visual debugging by saving annotated screenshots"""
@@ -270,10 +300,24 @@ class Agent:
                     if rect:
                         # Add to visualized tasks immediately to avoid race condition
                         self._visualized_tasks.add(task_id)
-                        
-                        # Get current UI context for screenshot
-                        context = await self.get_ui_context()
-                        if context and context.screenshot:
+
+                        task_log = task.get("log") or {}
+                        logged_ui_context = task_log.get("ui_context") if isinstance(task_log, dict) else {}
+                        screenshot_b64 = ""
+                        ratio = 1.0
+                        if isinstance(logged_ui_context, dict):
+                            screenshot_b64 = logged_ui_context.get("screenshot_base64") or ""
+                            ratio = logged_ui_context.get("shrunk_shot_to_logical_ratio") or 1.0
+
+                        if not screenshot_b64:
+                            # Fallback to current UI context if the task log does not
+                            # include a snapshot from the original locate step.
+                            context = await self.get_ui_context()
+                            if context:
+                                screenshot_b64 = context.screenshot
+                                ratio = getattr(context, "shrunk_shot_to_logical_ratio", 1.0)
+
+                        if screenshot_b64:
                             debug_dir = get_screenshot_save_dir(self._get_report_screenshot_dir())
                             
                             # 文件名添加 _debug 后缀
@@ -290,14 +334,23 @@ class Agent:
                                 width, height = rect.get("width", 0), rect.get("height", 0)
                             else: # Rect object
                                 left, top, width, height = rect.left, rect.top, rect.width, rect.height
-                                
-                            right, bottom = left + width, top + height
-                            
-                            label = format_box_label(rect, el_type)
+
+                            normalized_rect = self._rect_to_screenshot_space(
+                                {
+                                    "left": left,
+                                    "top": top,
+                                    "width": width,
+                                    "height": height,
+                                },
+                                coordinate_space=element.get("coordinate_space") or "logical",
+                                ratio=float(ratio),
+                            )
+
+                            label = format_box_label(normalized_rect, el_type)
                             
                             annotate_screenshot(
-                                context.screenshot,
-                                [{"rect": rect, "label": label}],
+                                screenshot_b64,
+                                [{"rect": normalized_rect, "label": label}],
                                 str(output_path)
                             )
                             logger.info(f"Visual debug screenshot saved with info: {output_path}")

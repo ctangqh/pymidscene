@@ -15,6 +15,7 @@ class LocateResultElement(BaseModel):
     el_type: str = "element"  # 控件类型
     description: str = ""
     dpr: Optional[float] = None
+    coordinate_space: Literal["logical", "screenshot"] = "logical"
     element_ref: Optional[Dict[str, Any]] = None
     locator_candidates: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -25,6 +26,11 @@ class DetailedLocateParam(BaseModel):
     deep_locate: bool = False
     cacheable: Optional[bool] = None
     located_pixel_bbox: Optional[List[float]] = None  # [left, top, right, bottom]
+    action_type: Optional[str] = None
+    structural_anchor_available: Optional[bool] = None
+    structural_anchor_bbox: Optional[List[float]] = None  # [left, top, right, bottom] in screenshot pixels
+    structural_anchor_description: Optional[str] = None
+    device_type: Optional[str] = None
 
 class MultimodalPrompt(BaseModel):
     prompt: str

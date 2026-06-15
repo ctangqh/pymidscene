@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from common.config import settings
 from core.anomaly_guard import UIAnomalyGuard
 from core.service import Service
+from core.types import Rect, UIContext
 from common.json_utils import parse_relaxed_json_object
 from llm import (
     DEFAULT_IMAGE_CONSTRAINTS,
@@ -284,6 +285,36 @@ def test_service_parse_json_response_handles_explanatory_text():
     assert parsed["type"] == "Input"
 
 
+def test_service_sanitize_rect_to_context_clips_valid_bbox():
+    service = Service({"screenshot": None}, llm=None)
+    context = UIContext(screenshot="", shot_size={"width": 1280, "height": 720})
+
+    rect = service._sanitize_rect_to_context(
+        Rect(left=100, top=100, width=1300, height=700),
+        context,
+    )
+
+    assert rect is not None
+    assert rect.left == 100
+    assert rect.top == 100
+    assert rect.width == 1180
+    assert rect.height == 620
+
+
+def test_service_sanitize_rect_to_context_rejects_tiny_or_invalid_bbox():
+    service = Service({"screenshot": None}, llm=None)
+    context = UIContext(screenshot="", shot_size={"width": 1280, "height": 720})
+
+    assert service._sanitize_rect_to_context(
+        Rect(left=324, top=738, width=100, height=1),
+        context,
+    ) is None
+    assert service._sanitize_rect_to_context(
+        Rect(left=388, top=863, width=105, height=50),
+        context,
+    ) is None
+
+
 def test_anomaly_guard_chat_json_handles_python_dict_response():
     llm = JsonTextLLM(
         "{'has_blocking_anomaly': True, 'confidence': 0.96, 'anomaly_kind': 'system_dialog', "
@@ -315,5 +346,7 @@ if __name__ == "__main__":
     test_openai_capabilities_expose_image_constraints()
     test_parse_relaxed_json_object_handles_wrapped_python_dict()
     test_service_parse_json_response_handles_explanatory_text()
+    test_service_sanitize_rect_to_context_clips_valid_bbox()
+    test_service_sanitize_rect_to_context_rejects_tiny_or_invalid_bbox()
     test_anomaly_guard_chat_json_handles_python_dict_response()
     print("test_llm_provider_flow.py: ok")

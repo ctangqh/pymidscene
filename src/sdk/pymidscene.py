@@ -61,6 +61,10 @@ class PyMidscene:
         
         # Agent-based architecture (only mode now)
         self._agent: Optional[Agent] = None
+        if self.debug and "visual_debug" not in kwargs:
+            # Keep docs/debug behavior consistent across device types:
+            # debug=True should also emit annotated bbox screenshots.
+            kwargs["visual_debug"] = True
         self._agent_options = kwargs
         
         self._launched = False

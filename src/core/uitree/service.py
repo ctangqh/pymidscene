@@ -17,6 +17,17 @@ from .registry import DEFAULT_ADAPTERS, iter_matching_adapters
 class UITreeManager:
     """UI 树统一入口"""
 
+    TOKEN_SYNONYMS: Dict[str, List[str]] = {
+        "搜索": ["search"],
+        "搜索框": ["search", "search box", "search field", "searchbar"],
+        "搜索输入框": ["search", "search input", "search box", "search field", "searchbar", "combobox"],
+        "输入": ["input", "type"],
+        "输入框": ["input", "textbox", "text box", "text field", "searchbox", "combobox"],
+        "按钮": ["button"],
+        "搜索按钮": ["search", "search button", "button", "google search"],
+        "点击": ["click", "tap"],
+    }
+
     REMOTE_EXECUTION_CAPABILITY: Dict[str, Dict[str, Dict[str, Any]]] = {
         "windows": {
             "accessibility id": {
@@ -241,8 +252,8 @@ class UITreeManager:
             "input": ["accessibility id", "name", "xpath"],
         },
         "playwright": {
-            "tap": ["playwright-ref", "selector", "css", "role", "text", "xpath"],
-            "input": ["playwright-ref", "css", "selector", "role", "xpath", "text"],
+            "tap": ["playwright-ref", "css", "role", "selector", "text", "xpath"],
+            "input": ["css", "role", "selector", "playwright-ref", "xpath", "text"],
         },
         "ios": {
             "tap": ["identifier", "name", "label", "predicate", "xpath"],
@@ -335,7 +346,7 @@ class UITreeManager:
         tokens = [token for token in re.split(r"[\s,，、/]+", description) if token]
 
         for node in flatten_tree(tree):
-            if not node.bounds:
+            if not node.bounds and not node.element_ref and not node.locator_candidates:
                 continue
             score = self._score_node(node, description, tokens)
             if score > best_score:
@@ -417,7 +428,8 @@ class UITreeManager:
         elif lowered_description and lowered_description in searchable_text:
             score += 8.0
 
-        for token in tokens:
+        expanded_tokens = self._expand_tokens(tokens)
+        for token in expanded_tokens:
             lowered_token = token.lower()
             if lowered_token == name:
                 score += 6.0
@@ -443,7 +455,30 @@ class UITreeManager:
         if "退出" in description and "退出" in searchable_text:
             score += 4.0
 
+        input_keywords = ["输入", "输入框", "textbox", "input", "searchbox", "搜索框", "搜索输入框"]
+        input_like_tags = ["input", "textarea", "textbox", "searchbox", "combobox", "edit"]
+        if any(keyword in description.lower() for keyword in [keyword.lower() for keyword in input_keywords]):
+            input_like_text = f"{tag} {control_type}"
+            if any(keyword in input_like_text for keyword in input_like_tags):
+                score += 6.0
+            elif "search" in input_like_text:
+                score += 1.5
+
         return score
+
+    def _expand_tokens(self, tokens: Iterable[str]) -> List[str]:
+        expanded: List[str] = []
+        seen = set()
+        for token in tokens:
+            normalized = (token or "").strip()
+            if not normalized:
+                continue
+            for candidate in [normalized, *self.TOKEN_SYNONYMS.get(normalized, [])]:
+                lowered = candidate.lower()
+                if lowered and lowered not in seen:
+                    seen.add(lowered)
+                    expanded.append(candidate)
+        return expanded
 
     def _apply_preferred_candidates(self, tree: UIElement, device_type: Optional[str] = None) -> None:
         platform = self._normalize_device_type(device_type or tree.platform)

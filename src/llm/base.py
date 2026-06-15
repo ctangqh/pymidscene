@@ -103,7 +103,10 @@ class BaseLLM(ABC):
         :param output_schema: 输出的 Pydantic 模型类
         :return: 解析后的 Pydantic 模型实例
         """
-        schema_prompt = "请严格按照以下 JSON Schema 返回结果，只返回合法 JSON，不要添加任何其他内容：\n"
+        schema_prompt = (
+            "Return output strictly following the JSON Schema below. "
+            "Return valid JSON only and do not add any extra text:\n"
+        )
         schema_prompt += "```json\n"
         schema_prompt += json.dumps(output_schema.model_json_schema(), ensure_ascii=False)
         schema_prompt += "\n```\n"

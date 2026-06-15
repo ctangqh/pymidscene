@@ -166,10 +166,130 @@ def test_task_builder_records_refresh_retry_log():
     assert task.log["action_recovery"][1]["selector_ref"]["selector_value"] == "new-btn"
 
 
+def test_task_builder_enriches_browser_element_with_uitree_selector_ref():
+    builder = TaskBuilder(_StubService(), _StubService())
+    raw_tree = {
+        "content": """### Page
+- Page URL: https://www.google.com/
+- Page Title: Google
+### Snapshot
+```yaml
+- search [ref=e35]:
+  - generic [ref=e39]:
+    - combobox "Search" [active] [ref=e46]
+```
+"""
+    }
+    element = LocateResultElement(
+        center=(200.0, 100.0),
+        rect=Rect(left=150.0, top=80.0, width=100.0, height=40.0),
+        description="Google 搜索输入框",
+        coordinate_space="screenshot",
+    )
+
+    enriched = builder._enrich_element_with_uitree_metadata(
+        element,
+        raw_tree,
+        "Google 搜索输入框",
+        device_type="browser",
+    )
+
+    assert enriched is not None
+    assert enriched.element_ref is not None
+    assert any(candidate["selector_type"] == "playwright-ref" for candidate in enriched.locator_candidates)
+    assert any(candidate["selector_type"] == "css" for candidate in enriched.locator_candidates)
+    assert any(candidate["selector_type"] == "role" for candidate in enriched.locator_candidates)
+    assert enriched.coordinate_space == "screenshot"
+    assert enriched.rect.left == 150.0
+    assert enriched.rect.top == 80.0
+    assert enriched.rect.width == 100.0
+    assert enriched.rect.height == 40.0
+    assert enriched.center == (200.0, 100.0)
+
+
+def test_task_builder_refreshes_browser_target_without_bounds():
+    builder = TaskBuilder(_StubService(), _StubService())
+    builder.device = SimpleNamespace(
+        interface_type="browser",
+        get_dom_tree=lambda: {
+            "content": """### Page
+- Page URL: https://www.google.com/
+- Page Title: Google
+### Snapshot
+```yaml
+- search [ref=e35]:
+  - generic [ref=e39]:
+    - combobox "Search" [active] [ref=e46]
+```
+"""
+        },
+    )
+    element = LocateResultElement(
+        center=(200.0, 100.0),
+        rect=Rect(left=150.0, top=80.0, width=100.0, height=40.0),
+        description="Google search text input field",
+        coordinate_space="screenshot",
+    )
+
+    refreshed = builder._refresh_action_target(
+        element,
+        device_type="browser",
+        action_type="Input",
+    )
+
+    assert refreshed is not None
+    assert refreshed["selector_ref"] is not None
+    assert refreshed["selector_ref"]["selector_type"] == "css"
+    assert refreshed["selector_ref"]["selector_value"] == '[aria-label="Search"]'
+    assert refreshed["position"] == (200.0, 100.0)
+
+
+def test_task_builder_browser_enrichment_keeps_visual_bbox():
+    builder = TaskBuilder(_StubService(), _StubService())
+    raw_tree = {
+        "content": """### Page
+- Page URL: https://www.google.com/
+- Page Title: Google
+### Snapshot
+```yaml
+- search [ref=e35]:
+  - generic [ref=e39]:
+    - combobox "Search" [active] [ref=e46]
+```
+"""
+    }
+    element = LocateResultElement(
+        center=(499.5, 377.0),
+        rect=Rect(left=272.0, top=343.0, width=455.0, height=68.0),
+        description="Google search text input field",
+        coordinate_space="screenshot",
+    )
+
+    enriched = builder._enrich_element_with_uitree_metadata(
+        element,
+        raw_tree,
+        "Google search text input field",
+        device_type="browser",
+    )
+
+    assert enriched is not None
+    assert enriched.coordinate_space == "screenshot"
+    assert enriched.rect.left == 272.0
+    assert enriched.rect.top == 343.0
+    assert enriched.rect.width == 455.0
+    assert enriched.rect.height == 68.0
+    assert enriched.center == (499.5, 377.0)
+    assert enriched.element_ref is not None
+    assert any(candidate["selector_type"] == "css" for candidate in enriched.locator_candidates)
+
+
 def run_all_task_builder_retry_checks():
     test_task_builder_retries_with_refreshed_uitree_target()
     test_task_builder_falls_back_to_position_after_retry_failure()
     test_task_builder_records_refresh_retry_log()
+    test_task_builder_enriches_browser_element_with_uitree_selector_ref()
+    test_task_builder_refreshes_browser_target_without_bounds()
+    test_task_builder_browser_enrichment_keeps_visual_bbox()
 
 
 if __name__ == "__main__":

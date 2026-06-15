@@ -25,7 +25,7 @@ from core.uitree import UIElement
 如果需要在 debug 模式下抓取并保存 UI tree：
 
 ```python
-from core.uitree import capture_debug_tree
+from core.uitree import capture_debug_tree, capture_full_page_control_debug
 ```
 
 核心导出
@@ -45,6 +45,9 @@ from core.uitree import capture_debug_tree
 
 - `capture_debug_tree`
   面向调试链路的辅助函数。会在 `settings.DEBUG` 开启时抓取并保存原始/解析后 UI tree。
+
+- `capture_full_page_control_debug`
+  保存整页截图并给 UITree 识别到的控件绘制 bbox，适合做浏览器/页面控件分布对比分析。
 
 - `UITREE_SCHEMA_VERSION`
   当前 UITree 调试文件与完整树结构所对应的 schema 版本。
@@ -417,7 +420,7 @@ capture_debug_tree(...)
 
 如果以后其他模块需要接入 UITree，请优先把这里当成唯一入口使用。
 """
-from .debug import capture_debug_tree
+from .debug import capture_debug_tree, capture_full_page_control_debug
 from .dump import UITREE_SCHEMA_VERSION
 from .models import Bounds, UIElement
 from .service import UITreeManager, uitree_manager
@@ -428,5 +431,6 @@ __all__ = [
     "UITreeManager",
     "UITREE_SCHEMA_VERSION",
     "capture_debug_tree",
+    "capture_full_page_control_debug",
     "uitree_manager",
 ]

@@ -1,12 +1,21 @@
 from report.renderer_html import dump_script_tag, insert_dump_into_html, report_html_template
 
 
-def test_report_html_template_contains_action_recovery_renderer():
+def test_report_html_template_contains_playwright_like_sections():
     html = report_html_template("Demo Report")
 
+    assert 'id="report-search"' in html
+    assert 'id="theme-select"' in html
+    assert "Dark" in html
+    assert "Light" in html
+    assert "pymidscene-report-theme" in html
+    assert "Search tests" in html
+    assert "Test Steps" in html
+    assert "Executed in Worker #0" in html
     assert "renderActionRecovery" in html
     assert "Action Recovery" in html
     assert "recovery-stage" in html
+    assert "filter-chip" in html
 
 
 def test_insert_dump_into_html_keeps_action_recovery_payload():
@@ -51,7 +60,7 @@ def test_insert_dump_into_html_keeps_action_recovery_payload():
 
 
 def run_all_report_renderer_checks():
-    test_report_html_template_contains_action_recovery_renderer()
+    test_report_html_template_contains_playwright_like_sections()
     test_insert_dump_into_html_keeps_action_recovery_payload()
 
 

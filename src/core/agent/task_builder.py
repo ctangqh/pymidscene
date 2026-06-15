@@ -6,7 +6,7 @@ from ..types import (
     ExecutionTaskApply, ExecutionTaskPlanningLocateApply,
     ElementCacheFeature, ExecutionTaskHitBy, Rect, LocateCache
 )
-from ..uitree.debug import capture_debug_tree
+from ..uitree.debug import capture_debug_tree, capture_full_page_control_debug
 from ..uitree.dump import build_debug_prefix
 from ..uitree.service import uitree_manager
 from .conversation_history import ConversationHistory
@@ -99,11 +99,40 @@ class TaskBuilder:
             "position": element.center,
         }
 
+    @staticmethod
+    def _position_to_device_space(
+        position: Optional[tuple],
+        *,
+        coordinate_space: str = "logical",
+        ratio: float = 1.0,
+    ) -> Optional[tuple]:
+        if not position:
+            return position
+        if coordinate_space == "screenshot" and ratio and ratio != 1.0:
+            return (position[0] / ratio, position[1] / ratio)
+        return position
+
     @classmethod
-    def _build_locate_result_from_node(cls, matched_node: Any, description: str) -> Optional[LocateResultElement]:
-        if not matched_node or not getattr(matched_node, "bounds", None):
+    def _build_locate_result_from_node(
+        cls,
+        matched_node: Any,
+        description: str,
+        fallback_element: Optional[LocateResultElement] = None,
+    ) -> Optional[LocateResultElement]:
+        if not matched_node:
             return None
-        left, top, width, height = matched_node.bounds
+
+        bounds = getattr(matched_node, "bounds", None)
+        if bounds:
+            left, top, width, height = bounds
+        elif fallback_element:
+            left = fallback_element.rect.left
+            top = fallback_element.rect.top
+            width = fallback_element.rect.width
+            height = fallback_element.rect.height
+        else:
+            return None
+
         rect = Rect(left=left, top=top, width=width, height=height)
         return LocateResultElement(
             center=(rect.left + rect.width / 2, rect.top + rect.height / 2),
@@ -132,6 +161,50 @@ class TaskBuilder:
             return locate_param.strip()
         return cls._stringify_prompt(locate_param)
 
+    @staticmethod
+    def _bounds_to_screenshot_bbox(bounds: Any, *, ratio: float = 1.0) -> Optional[List[float]]:
+        if not bounds or len(bounds) != 4:
+            return None
+        left, top, width, height = [float(v) for v in bounds]
+        if ratio and ratio != 1.0:
+            left *= ratio
+            top *= ratio
+            width *= ratio
+            height *= ratio
+        return [left, top, left + width, top + height]
+
+    @classmethod
+    def _populate_structural_anchor_metadata(
+        cls,
+        locate_param_obj: DetailedLocateParam,
+        raw_tree: Any,
+        prompt_text: str,
+        *,
+        device_type: Optional[str] = None,
+        ratio: float = 1.0,
+    ) -> None:
+        if not raw_tree or not prompt_text:
+            return
+        try:
+            matched_node = uitree_manager.find_best_match(raw_tree, prompt_text, device_type=device_type)
+            if not matched_node:
+                return
+            if locate_param_obj.structural_anchor_available is None:
+                locate_param_obj.structural_anchor_available = True
+            if not locate_param_obj.structural_anchor_bbox:
+                anchor_bbox = cls._bounds_to_screenshot_bbox(
+                    getattr(matched_node, "bounds", None),
+                    ratio=ratio,
+                )
+                if anchor_bbox:
+                    locate_param_obj.structural_anchor_bbox = anchor_bbox
+            if not locate_param_obj.structural_anchor_description:
+                locate_param_obj.structural_anchor_description = (
+                    getattr(matched_node, "name", None) or prompt_text
+                )
+        except Exception as exc:
+            logger.debug(f"populate structural anchor metadata failed: prompt={prompt_text}, error={exc}")
+
     def _refresh_action_target(
         self,
         element: Optional[LocateResultElement],
@@ -147,7 +220,11 @@ class TaskBuilder:
         try:
             raw_tree = self.device.get_dom_tree()
             matched_node = uitree_manager.find_best_match(raw_tree, description, device_type=device_type)
-            refreshed_element = self._build_locate_result_from_node(matched_node, description)
+            refreshed_element = self._build_locate_result_from_node(
+                matched_node,
+                description,
+                fallback_element=element,
+            )
             if not refreshed_element:
                 return None
             refreshed_target = self._resolve_action_target(
@@ -161,6 +238,31 @@ class TaskBuilder:
         except Exception as exc:
             logger.debug(f"refresh action target failed: action={action_type}, description={description}, error={exc}")
             return None
+
+    @classmethod
+    def _enrich_element_with_uitree_metadata(
+        cls,
+        element: Optional[LocateResultElement],
+        raw_tree: Any,
+        description: str,
+        *,
+        device_type: Optional[str] = None,
+    ) -> Optional[LocateResultElement]:
+        if not element or not raw_tree or not description:
+            return element
+        if element.element_ref and element.locator_candidates:
+            return element
+        try:
+            matched_node = uitree_manager.find_best_match(raw_tree, description, device_type=device_type)
+            if not matched_node:
+                return element
+            if not element.element_ref and getattr(matched_node, "element_ref", None):
+                element.element_ref = cls._serialize_element_ref(matched_node.element_ref)
+            if not element.locator_candidates and getattr(matched_node, "locator_candidates", None):
+                element.locator_candidates = cls._serialize_locator_candidates(matched_node.locator_candidates)
+        except Exception as exc:
+            logger.debug(f"enrich element with uitree metadata failed: description={description}, error={exc}")
+        return element
 
     @staticmethod
     def _append_action_recovery_log(task: Any, record: Dict[str, Any]) -> None:
@@ -365,6 +467,7 @@ class TaskBuilder:
                 locate_task = self._create_locate_task(
                     locate_plan, param[field], default_model, cacheable, deep_locate,
                     on_result=lambda result, f=field, p=param: p.update({f: result}),
+                    action_type=plan_type,
                 )
                 tasks.append(locate_task)
             elif field in required_locate_fields:
@@ -406,6 +509,7 @@ class TaskBuilder:
         cacheable=None,
         deep_locate=None,
         on_result: Optional[Callable] = None,
+        action_type: Optional[str] = None,
     ) -> ExecutionTaskPlanningLocateApply:
         """Create a locate task with cache/AI fallback chain"""
         
@@ -421,6 +525,10 @@ class TaskBuilder:
             locate_param.cacheable = cacheable
         if deep_locate and not locate_param.deep_locate:
             locate_param.deep_locate = True
+        if action_type and not locate_param.action_type:
+            locate_param.action_type = action_type
+        if not locate_param.device_type:
+            locate_param.device_type = getattr(self.device, "interface_type", None)
         
         task = ExecutionTaskPlanningLocateApply(
             type="Planning",
@@ -460,19 +568,22 @@ class TaskBuilder:
             hit_by = None
             raw_tree = None
             device_type = getattr(self.device, "interface_type", None)
+            prompt_text = ""
             
             # Try plan direct hit
             locate_param_obj = param
             if isinstance(param, dict):
                 locate_param_obj = DetailedLocateParam(**param) if param.get("prompt") else locate_param
+            if not locate_param_obj.device_type:
+                locate_param_obj.device_type = device_type
+            prompt_text = (
+                locate_param_obj.prompt
+                if isinstance(locate_param_obj.prompt, str)
+                else str(locate_param_obj.prompt)
+            )
 
             if settings.DEBUG:
                 try:
-                    prompt_text = (
-                        locate_param_obj.prompt
-                        if isinstance(locate_param_obj.prompt, str)
-                        else str(locate_param_obj.prompt)
-                    )
                     raw_tree = self.device.get_dom_tree()
                     save_dir = None
                     screenshot_dir_resolver = getattr(self.device, "_pymidscene_report_screenshot_dir_resolver", None)
@@ -489,8 +600,33 @@ class TaskBuilder:
                         save_dir=save_dir,
                         prefix=build_debug_prefix(prompt_text),
                     )
+                    if device_type in ("browser", "web"):
+                        capture_full_page_control_debug(
+                            self.device,
+                            prompt_text,
+                            raw_tree=raw_tree,
+                            device_type=device_type,
+                            save_dir=save_dir,
+                            prefix=f"{build_debug_prefix(prompt_text)}_fullpage",
+                        )
                 except Exception as e:
                     logger.debug(f"capture_debug_tree error: {e}")
+
+            if locate_param_obj.structural_anchor_available is None and device_type in ("browser", "web", "windows"):
+                if raw_tree is None:
+                    try:
+                        raw_tree = self.device.get_dom_tree()
+                    except Exception:
+                        raw_tree = None
+                locate_param_obj.structural_anchor_available = raw_tree is not None
+            if raw_tree is not None:
+                self._populate_structural_anchor_metadata(
+                    locate_param_obj,
+                    raw_tree,
+                    prompt_text,
+                    device_type=device_type,
+                    ratio=shrunk_shot_to_logical_ratio,
+                )
             
             if locate_param_obj.located_pixel_bbox and not locate_param_obj.deep_locate:
                 bbox = locate_param_obj.located_pixel_bbox
@@ -501,6 +637,7 @@ class TaskBuilder:
                     center=(center_x, center_y),
                     rect=rect,
                     description=locate_param_obj.prompt if isinstance(locate_param_obj.prompt, str) else str(locate_param_obj.prompt),
+                    coordinate_space="screenshot",
                 )
                 hit_by = ExecutionTaskHitBy(**{"from": "Plan", "context": {"locatedPixelBbox": bbox}})
             
@@ -521,6 +658,7 @@ class TaskBuilder:
                                     center=(rect.left + rect.width / 2, rect.top + rect.height / 2),
                                     rect=rect,
                                     description=cache_prompt if isinstance(cache_prompt, str) else str(cache_prompt),
+                                    coordinate_space="logical",
                                 )
                                 cache_entry = cache_result.cache_content.cache.model_dump() if hasattr(cache_result.cache_content.cache, 'model_dump') else cache_result.cache_content.cache
                                 hit_by = ExecutionTaskHitBy(**{"from": "Cache", "context": {"cacheEntry": cache_entry}})
@@ -530,11 +668,6 @@ class TaskBuilder:
             # Try native UI tree hit for non-web devices before AI vision locate
             if not element and device_type not in ("web", "browser"):
                 try:
-                    prompt_text = (
-                        locate_param_obj.prompt
-                        if isinstance(locate_param_obj.prompt, str)
-                        else str(locate_param_obj.prompt)
-                    )
                     if raw_tree is None:
                         raw_tree = self.device.get_dom_tree()
                     matched_node = uitree_manager.find_best_match(raw_tree, prompt_text, device_type=device_type)
@@ -546,6 +679,7 @@ class TaskBuilder:
                             rect=rect,
                             el_type=matched_node.control_type or matched_node.tag or "element",
                             description=matched_node.name or prompt_text,
+                            coordinate_space="logical",
                             element_ref=self._serialize_element_ref(matched_node.element_ref),
                             locator_candidates=self._serialize_locator_candidates(matched_node.locator_candidates),
                         )
@@ -577,6 +711,17 @@ class TaskBuilder:
                     )
                     if locate_result:
                         element = locate_result.element
+                        if raw_tree is None:
+                            try:
+                                raw_tree = self.device.get_dom_tree()
+                            except Exception:
+                                raw_tree = None
+                        element = self._enrich_element_with_uitree_metadata(
+                            element,
+                            raw_tree,
+                            prompt_text,
+                            device_type=device_type,
+                        )
                 except Exception as e:
                     error_dump = getattr(e, 'dump', None)
                     if error_dump:
@@ -585,6 +730,24 @@ class TaskBuilder:
             
             if not element:
                 raise ValueError(f"Element not found: {locate_param_obj.prompt}")
+
+            prompt_text = (
+                locate_param_obj.prompt
+                if isinstance(locate_param_obj.prompt, str)
+                else str(locate_param_obj.prompt)
+            )
+            if device_type in ("web", "browser"):
+                if raw_tree is None:
+                    try:
+                        raw_tree = self.device.get_dom_tree()
+                    except Exception:
+                        raw_tree = None
+                element = self._enrich_element_with_uitree_metadata(
+                    element,
+                    raw_tree,
+                    prompt_text,
+                    device_type=device_type,
+                )
             
             # Write cache if element found and not a cache hit
             if element and self.task_cache and hit_by is None:
@@ -592,10 +755,15 @@ class TaskBuilder:
                 if hasattr(self.device, 'cache_feature_for_point') and self.device.cache_feature_for_point:
                     try:
                         point_for_cache = element.center
-                        if shrunk_shot_to_logical_ratio != 1.0:
+                        point_for_cache = self._position_to_device_space(
+                            point_for_cache,
+                            coordinate_space=getattr(element, "coordinate_space", "logical"),
+                            ratio=shrunk_shot_to_logical_ratio,
+                        )
+                        if point_for_cache:
                             point_for_cache = (
-                                round(element.center[0] / shrunk_shot_to_logical_ratio),
-                                round(element.center[1] / shrunk_shot_to_logical_ratio),
+                                round(point_for_cache[0]),
+                                round(point_for_cache[1]),
                             )
                         feature = self.device.cache_feature_for_point(
                             point_for_cache,
@@ -640,8 +808,11 @@ class TaskBuilder:
             position = action_target["position"]
             ui_context = task_context.get("ui_context")
             ratio = getattr(ui_context, "shrunk_shot_to_logical_ratio", 1.0) if ui_context else 1.0
-            if position and ratio and ratio != 1.0:
-                position = (position[0] / ratio, position[1] / ratio)
+            position = self._position_to_device_space(
+                position,
+                coordinate_space=getattr(element, "coordinate_space", "logical") if element else "logical",
+                ratio=ratio,
+            )
             selector = action_target["selector"]
             selector_type = action_target["selector_type"]
             selector_ref = action_target["selector_ref"]

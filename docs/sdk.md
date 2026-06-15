@@ -54,10 +54,11 @@ ms.close()
 - `vision_provider`: 视觉模型提供方（如 `openai`, `deepseek`）
 - `mcp_name`: MCP 服务器配置名称
 - `mcp_server_url`: 可选，覆盖配置中的 MCP 服务器地址
-- `debug`: 是否启用调试模式（打印 bbox 和操作日志）
+- `debug`: 是否启用调试模式。开启后会打印详细日志、保存 UITree 调试产物，并在未显式指定时默认开启 `visual_debug`
 - `device_options`: 设备特定选项字典
 - `llm_options`: LLM 特定选项字典
 - `vision_options`: 视觉模型特定选项字典
+- `**kwargs`: 其他高级参数，会透传给 `PyMidscene` / `Agent`，例如 `visual_debug=False`
 
 **返回值：**
 - `PyMidscene`: 初始化后的客户端实例
@@ -322,10 +323,24 @@ print(result)
 启用调试模式（`debug=True`）后，SDK 会：
 - 打印操作的详细日志
 - 打印元素定位的 bbox（边界框）坐标
-- 保存带有 bbox 标注的调试截图到当前 report 对应的 `screenshots/` 目录
+- 保存 UITree 调试产物到当前 report 对应的 `screenshots/` 目录，通常包括：
+- `<业务文件名>.json`：解析后的 UITree
+- `<业务文件名>_raw.json`：原始 UITree / DOM / Snapshot 数据
+- 默认开启 `visual_debug`，保存带有 bbox 标注的调试截图
+- bbox 标注图通常命名为 `<业务文件名>_debug.png`，某些链路还会生成 `<业务文件名>_raw_debug.png`、`<业务文件名>_debug.json`
 - 如果调用 `ms.screenshot("name.png")`，则截图文件名会优先保留为指定名称
 - 如果调用 `ms.screenshot()`，则系统自动生成文件名
 - 如果截图经过 report 自动记录链路持久化，report 目录中的文件名也会优先沿用业务名称
+
+如果你希望保留详细日志和 UITree 调试信息，但不生成 bbox 标注图，可以显式关闭：
+
+```python
+ms = create_client(
+    device_provider="mcp_playwright",
+    debug=True,
+    visual_debug=False,
+)
+```
 
 **示例：**
 
@@ -423,7 +438,13 @@ go run .
 - report 自动记录截图且提供业务文件名时：优先保存为业务文件名
 - report 自动记录截图且文件名冲突时：自动补后缀，如 `02_text_entered_2.png`
 - report 自动记录截图且没有业务文件名时：回退到系统生成的稳定名称
+- 调试链路生成的相关产物会尽量收敛到同一业务文件名前缀，例如：
+- `02_text_entered_debug.png`
+- `02_text_entered_raw_debug.png`
+- `02_text_entered.json`
+- `02_text_entered_raw.json`
+- `02_text_entered_debug.json`
 
 ### 如何查看定位日志？
 
-设置 `debug=True` 即可在控制台看到详细定位日志，包括 bbox 坐标和操作步骤。
+设置 `debug=True` 即可在控制台看到详细定位日志，包括 bbox 坐标、操作步骤，以及 UITree 调试产物保存信息。

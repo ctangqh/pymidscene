@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -374,8 +375,34 @@ class BaseMcpDevice(BaseDevice):
     def evaluate_script(self, script: str, *args) -> Any:
         result = self._execute_mcp_action("evaluate", script=script, args=args)
         txt = self._parse_text(result).strip()
-        try: return json.loads(txt)
-        except: return txt
+        try:
+            return json.loads(txt)
+        except Exception:
+            pass
+
+        result_section_match = re.search(
+            r"###\s*Result\s*([\s\S]*?)(?:\n###\s|\Z)",
+            txt,
+            re.IGNORECASE,
+        )
+        fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", txt, re.IGNORECASE)
+        candidates = []
+        if result_section_match:
+            candidates.append(result_section_match.group(1).strip())
+        if fenced_match:
+            candidates.append(fenced_match.group(1).strip())
+
+        bracket_match = re.search(r"(\{[\s\S]*?\}|\[[\s\S]*?\])", txt)
+        if bracket_match:
+            candidates.append(bracket_match.group(1).strip())
+
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+
+        return txt
 
     def keyboard_press(self, key_name: str, **kwargs) -> None:
         self._execute_mcp_action("keyboard_press", key=key_name, **kwargs)
@@ -438,6 +465,25 @@ class McpPlaywrightDevice(BaseMcpDevice):
     @property
     def interface_type(self) -> str: return "browser"
 
+    def size(self) -> Tuple[int, int]:
+        try:
+            viewport = self.evaluate_script(
+                """
+() => ({
+  width: window.innerWidth || document.documentElement.clientWidth || 0,
+  height: window.innerHeight || document.documentElement.clientHeight || 0
+})
+""".strip()
+            )
+            if isinstance(viewport, dict):
+                width = int(round(float(viewport.get("width") or 0)))
+                height = int(round(float(viewport.get("height") or 0)))
+                if width > 0 and height > 0:
+                    return (width, height)
+        except Exception:
+            pass
+        return super().size()
+
     def _pw_scroll_mapper(self, **k):
         dist = k.get("distance") or self.viewport_height * 0.8
         direction = k.get("direction", "down")
@@ -454,7 +500,7 @@ class McpPlaywrightDevice(BaseMcpDevice):
         if not selector_value:
             return {}
         if selector_type == "playwright-ref":
-            return {"element": selector_value}
+            return {"element": selector_value, "ref": selector_value}
         if selector_type == "role" and extra.get("role") and extra.get("name"):
             return {"target": f'{extra["role"]}="{extra["name"]}"'}
         return {"target": selector_value}
@@ -463,10 +509,12 @@ class McpPlaywrightDevice(BaseMcpDevice):
         resolved_ref = self.resolve_selector_ref(selector, action_type="tap", **kwargs)
         resolved_selector = self._selector_value(selector, resolved_ref)
         if resolved_selector:
+            normalize_kwargs = dict(kwargs)
+            normalize_kwargs.pop("selector_ref", None)
             args = self._normalize_playwright_selector(
                 resolved_selector,
                 selector_ref=resolved_ref,
-                **kwargs,
+                **normalize_kwargs,
             )
             self._submit(self._call_mcp("browser_click", args))
             return
@@ -483,15 +531,21 @@ class McpPlaywrightDevice(BaseMcpDevice):
         resolved_ref = self.resolve_selector_ref(selector, action_type="input", **kwargs)
         resolved_selector = self._selector_value(selector, resolved_ref)
         if resolved_selector:
+            normalize_kwargs = dict(kwargs)
+            normalize_kwargs.pop("selector_ref", None)
             args = self._normalize_playwright_selector(
                 resolved_selector,
                 selector_ref=resolved_ref,
-                **kwargs,
+                **normalize_kwargs,
             )
             args["text"] = text
             self._submit(self._call_mcp("browser_type", args))
             return
         super().input(text, selector=selector, position=position, clear_before=clear_before, **kwargs)
+
+    def action_space(self) -> List[Any]:
+        from core.agent.action_space import WEB_ACTION_SPACE
+        return list(WEB_ACTION_SPACE)
 
 
 class McpWinAppDevice(BaseMcpDevice):

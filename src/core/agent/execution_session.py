@@ -101,6 +101,7 @@ class TaskRunner:
                     task_log["ui_context"] = {
                         "shot_size": getattr(ui_context, "shot_size", None),
                         "screenshot_base64": getattr(ui_context, "screenshot", "") or "",
+                        "shrunk_shot_to_logical_ratio": getattr(ui_context, "shrunk_shot_to_logical_ratio", 1.0),
                     }
 
                 if executor:
